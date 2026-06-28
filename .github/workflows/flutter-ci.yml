@@ -55,4 +55,4 @@ jobs:
           args: >
             -Dsonar.projectKey=ADNAN-ZEYA_SafeChat-2.0
             -Dsonar.organization=adnan-zeya
-            -Dsonar.sources=frontend/lib
+            -Dsonar.sources=lib
