@@ -45,6 +45,26 @@ jobs:
           printf '%s' "$FIREBASE_ADMIN_SDK_KEY" > "$FIREBASE_ADMIN_KEY_PATH"
           pytest
 
+      - name: 🔒 Trivy filesystem scan
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          scan-type: fs
+          scan-ref: ./backend
+          severity: CRITICAL,HIGH
+          exit-code: '0'
+
+      - name: 📊 SonarCloud scan
+        uses: SonarSource/sonarcloud-github-action@v3
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+        with:
+          args: >
+            -Dsonar.projectKey=ADNAN-ZEYA_SafeChat-2.0
+            -Dsonar.organization=adnan-zeya
+            -Dsonar.sources=backend
+            -Dsonar.python.version=3.11
+
       - name: 🔑 Authenticate to GCP
         uses: google-github-actions/auth@v2
         with:
@@ -62,6 +82,14 @@ jobs:
             --tag asia-south1-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/safechat/backend:${{ github.sha }} \
             --gcs-log-dir=gs://${{ secrets.GCP_PROJECT_ID }}_cloudbuild/logs \
             --quiet
+
+      - name: 🔒 Trivy image scan
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          scan-type: image
+          image-ref: asia-south1-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/safechat/backend:${{ github.sha }}
+          severity: CRITICAL,HIGH
+          exit-code: '0'
 
       - name: 🏷️ Tag image as latest
         run: |
