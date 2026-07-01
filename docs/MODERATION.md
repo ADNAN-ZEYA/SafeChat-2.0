@@ -12,6 +12,21 @@ All moderation runs **server-side** (FastAPI). Nothing — no model, no keyword
 list — ships to the client (`AGENT.md` rule #1: all writes go through the
 backend so moderation always runs).
 
+**Exception — SafeChat Mode (`chats/{chatId}.encryption_mode == "trusted"`).**
+When two mutual followers turn SafeChat Mode OFF for their chat, messages are
+encrypted client-side before they ever reach the backend, and
+`services/messages.py::send_message` skips the cascade entirely for that
+chat — the server only ever sees ciphertext. This is deliberate: it's the
+only surface in the app where AI moderation is intentionally bypassed.
+Non-mutual-follow chats can never enter this mode. See
+`docs/DATABASE_SCHEMA.md` section 10 for the full model, the mutual-follow
+gate, and the unfollow-reverts-trust rule.
+
+The client-side encryption itself is simple static-key X25519 (via the
+`cryptography` Dart package), **not** Signal Protocol / Double Ratchet — it
+has **no forward secrecy**: a compromised private key exposes all past
+messages encrypted to it. Upgrading to a proper ratchet is future work.
+
 ---
 
 ## The cascade (`moderation/engine.py`)

@@ -228,6 +228,31 @@ async def test_follow_self_raises(fake_db: _FakeDB) -> None:
         await follows_service.follow_user("alice", "alice")
 
 
+@pytest.mark.asyncio
+async def test_is_mutual_follow_true_when_both_directions_exist(
+    fake_db: _FakeDB,
+) -> None:
+    _seed_user(fake_db, "alice")
+    _seed_user(fake_db, "bob")
+    await follows_service.follow_user("alice", "bob")
+    await follows_service.follow_user("bob", "alice")
+
+    assert await follows_service.is_mutual_follow("alice", "bob") is True
+    assert await follows_service.is_mutual_follow("bob", "alice") is True
+
+
+@pytest.mark.asyncio
+async def test_is_mutual_follow_false_when_only_one_direction(
+    fake_db: _FakeDB,
+) -> None:
+    _seed_user(fake_db, "alice")
+    _seed_user(fake_db, "bob")
+    await follows_service.follow_user("alice", "bob")
+
+    assert await follows_service.is_mutual_follow("alice", "bob") is False
+    assert await follows_service.is_mutual_follow("bob", "alice") is False
+
+
 # --------------------------------------------------------------------------
 # API tests
 # --------------------------------------------------------------------------
@@ -340,9 +365,20 @@ def test_unfollow_returns_204(
 
     monkeypatch.setattr(follows_service, "unfollow_user", fake_unfollow)
 
+    from services import messages as messages_service
+
+    revert_calls: list[tuple[str, str]] = []
+
+    async def fake_revert(uid_a: str, uid_b: str) -> None:
+        revert_calls.append((uid_a, uid_b))
+
+    monkeypatch.setattr(messages_service, "revert_chat_to_pending_if_trusted", fake_revert)
+
     response = client.delete("/api/v1/users/target-uid/follow")
 
     assert response.status_code == 204
+    # Unfollowing must check whether it broke a "trusted" chat's mutual-follow gate.
+    assert revert_calls == [("follower", "target-uid")]
 
 
 def test_get_followers_returns_list(

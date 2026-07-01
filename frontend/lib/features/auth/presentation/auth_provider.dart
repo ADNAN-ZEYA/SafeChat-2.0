@@ -1,6 +1,9 @@
+import 'dart:async';
+
 import 'package:hive_flutter/hive_flutter.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../../../core/network/dio_client.dart';
+import '../../chat/data/encryption_service.dart';
 import '../data/auth_api_service.dart';
 import '../data/auth_repository.dart';
 import '../domain/models/auth_models.dart';
@@ -37,11 +40,24 @@ class AuthController extends Notifier<AuthState> {
     // Cache auth state
     if (result.isAuthenticated && !result.needsOnboarding) {
       Hive.box('settings').put('isAuthenticated', true);
+      _ensureE2eKeys(result.user!.uid);
     } else {
       Hive.box('settings').put('isAuthenticated', false);
     }
 
     state = result.copyWith(isLoading: false);
+  }
+
+  /// Generates (once per device) and publishes this user's SafeChat Mode
+  /// E2E keypair. Fire-and-forget: a failure here must never block login —
+  /// chats simply stay unavailable for SafeChat Mode until it succeeds on a
+  /// later login.
+  void _ensureE2eKeys(String uid) {
+    final dio = ref.read(dioProvider);
+    final encryption = ref.read(encryptionServiceProvider);
+    unawaited(
+      encryption.ensureKeyPairPublished(uid, dio).catchError((_) {}),
+    );
   }
 
   Future<void> signUpWithEmailAndPassword({
@@ -64,6 +80,7 @@ class AuthController extends Notifier<AuthState> {
 
     if (result.isAuthenticated && !result.needsOnboarding) {
       Hive.box('settings').put('isAuthenticated', true);
+      _ensureE2eKeys(result.user!.uid);
     }
 
     state = result.copyWith(isLoading: false);
@@ -77,6 +94,7 @@ class AuthController extends Notifier<AuthState> {
 
     if (result.isAuthenticated && !result.needsOnboarding) {
       Hive.box('settings').put('isAuthenticated', true);
+      _ensureE2eKeys(result.user!.uid);
     }
 
     state = result.copyWith(isLoading: false);
@@ -102,6 +120,7 @@ class AuthController extends Notifier<AuthState> {
 
     if (result.isAuthenticated && !result.needsOnboarding) {
       Hive.box('settings').put('isAuthenticated', true);
+      _ensureE2eKeys(result.user!.uid);
     }
 
     state = result.copyWith(isLoading: false);

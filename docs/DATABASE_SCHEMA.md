@@ -31,6 +31,7 @@ firestore/
 │
 ├── moderation_keywords/{keywordId}    — Dynamic keyword filter entries
 ├── moderation_logs/{logId}            — Moderation decision logs
+├── encryption_mode_audit_logs/{logId} — SafeChat Mode transition log
 │
 └── fcm_tokens/{tokenId}               — Push notification tokens
 ```
@@ -58,6 +59,7 @@ The `uid` matches the Firebase Auth UID.
   bio: string,                  // 0-200 chars
   photo_url: string | null,     // Firebase Storage URL — pre-cropped on upload
   background_url: string | null, // pre-cropped (16:9) on upload
+  public_key: string | null,    // base64 X25519 public key, for SafeChat Mode E2E encryption
   
   follower_count: number,       // denormalized counter
   following_count: number,
@@ -252,6 +254,11 @@ Chat ID format: `{sorted_uid1}_{sorted_uid2}` — alphabetically sorted UIDs joi
     [uid: string]: number,
   },
   
+  // SafeChat Mode. "pending" = ON (unencrypted, full moderation pipeline).
+  // "trusted" = OFF (client-side E2E encrypted, moderation skipped).
+  // Only togglable between mutual followers — see section 10.
+  encryption_mode: "pending" | "trusted",  // default: "pending"
+  
   created_at: Timestamp,
   updated_at: Timestamp,
 }
@@ -275,8 +282,15 @@ Chat list UI shows preview of latest message per chat. Querying messages for eac
   
   read_at: Timestamp | null,
   
-  // Toxic messages NEVER reach this collection. Moderation blocks before write.
-  // No `status` field needed — only clean messages exist here.
+  // See section 9 for the status/moderation fields ("approved" |
+  // "pending_review" | "rejected") that apply when the parent chat's
+  // encryption_mode is "pending".
+  
+  // True when `text` is client-side E2E ciphertext, i.e. this message was
+  // sent while the chat's encryption_mode was "trusted". Recorded per-message
+  // (not derived from the chat's current mode) so old messages stay readable
+  // as history after the chat toggles modes again — see section 10.
+  encrypted: boolean,            // default: false
   
   created_at: Timestamp,
 }
@@ -755,4 +769,55 @@ queue, FIFO) and `author_uid ASC, created_at DESC` (author's appeals).
 
 ---
 
-*Last updated: June 2026 (moderation_queue + content status fields)*
+## 10. SafeChat Mode (conditional E2E encryption for chats)
+
+Per-chat toggle between two states, stored as `chats/{chatId}.encryption_mode`:
+
+| Mode | Meaning | Moderation | Storage |
+|---|---|---|---|
+| `pending` (default) | SafeChat Mode ON | Full lexicon → TF-IDF → OpenAI → Vision pipeline runs | Plaintext |
+| `trusted` | SafeChat Mode OFF | Skipped entirely — backend never sees plaintext | Client-side E2E ciphertext |
+
+**Mutual-follow gate.** The mode can only be changed via
+`PATCH /chats/{chat_id}/encryption-mode` when the two participants mutually
+follow each other (`services/follows.py::is_mutual_follow`). Non-mutual chats
+are always forced to `pending` — no way to disable moderation until the other
+user follows back.
+
+**Unfollow reverts trust.** If either participant unfollows the other, any
+`trusted` chat between them is immediately forced back to `pending`
+(`services/messages.py::revert_chat_to_pending_if_trusted`), and the
+transition is recorded in `encryption_mode_audit_logs/{logId}`:
+
+| Field | Type | Notes |
+|---|---|---|
+| chat_id | string | |
+| previous_mode / new_mode | string | `pending` \| `trusted` |
+| reason | string | `toggle` (user action) \| `unfollow` (system-forced) |
+| actor_uid | string? | null for system-forced transitions |
+| created_at | timestamp | |
+
+**Rules:** backend-only, not client-readable (mirrors `moderation_logs`).
+
+**No retroactive encryption.** Toggling a chat to `trusted` does not encrypt
+its existing plaintext history — old messages remain exactly as sent. Each
+message records its own `encrypted` flag at send time (section 2), so display
+logic never depends on the chat's *current* mode.
+
+**Client-side crypto (Flutter).** Each user generates an X25519 keypair on
+first login (`cryptography` package); the private key lives only in
+`flutter_secure_storage` and the public key is published to
+`users/{uid}.public_key`. When sending in a `trusted` chat, the client derives
+a shared secret via static-static X25519 ECDH with the recipient's public key,
+then encrypts with a symmetric AEAD cipher before the ciphertext ever reaches
+the backend. This is intentionally simple asymmetric encryption, **not**
+Signal Protocol / Double Ratchet.
+
+**Known limitation — no forward secrecy.** Because both sides use long-lived
+static keypairs, a compromised private key exposes every past message
+encrypted to it. Upgrading to a proper double-ratchet (Signal Protocol) for
+forward secrecy is documented future work, not in scope for this phase.
+
+---
+
+*Last updated: July 2026 (SafeChat Mode conditional E2E encryption)*

@@ -43,6 +43,7 @@ class UpdateProfileRequest(BaseModel):
     background_url: str | None = None
     private_account: bool | None = None
     allow_messages_from: Literal["everyone", "followers", "none"] | None = None
+    public_key: str | None = None
 
 
 class UserProfile(BaseModel):
@@ -57,6 +58,7 @@ class UserProfile(BaseModel):
     bio: str
     photo_url: str | None = None
     background_url: str | None = None
+    public_key: str | None = None  # base64 X25519 public key, for E2E chat encryption
 
     follower_count: int
     following_count: int

@@ -24,6 +24,7 @@ from core.firebase import db
 from models.message import Chat, Message
 from models.moderation import Match
 from moderation.engine import moderate_text
+from services import follows as follows_service
 from services import moderation_queue
 from services.notifications import send_message_notification
 
@@ -32,10 +33,17 @@ logger = logging.getLogger(__name__)
 CHATS_COLLECTION = "chats"
 MESSAGES_SUBCOLLECTION = "messages"
 USERS_COLLECTION = "users"
+ENCRYPTION_AUDIT_COLLECTION = "encryption_mode_audit_logs"
+
+_ENCRYPTED_PLACEHOLDER = "🔒 Encrypted message"
 
 
 class CannotMessageSelf(Exception):
     """Raised when a user tries to start a chat with themselves."""
+
+
+class NotMutualFollow(Exception):
+    """Raised when a SafeChat Mode change is attempted between non-mutual followers."""
 
 
 class MessageBlocked(Exception):
@@ -106,6 +114,7 @@ async def get_or_create_chat(uid_a: str, uid_b: str) -> Chat:
         "participants": sorted([uid_a, uid_b]),
         "last_message_text": None,
         "last_message_at": None,
+        "encryption_mode": "pending",
         "created_at": now,
         "updated_at": now,
         "schema_version": 1,
@@ -116,6 +125,114 @@ async def get_or_create_chat(uid_a: str, uid_b: str) -> Chat:
     # Refetch to resolve SERVER_TIMESTAMP.
     snap = await asyncio.to_thread(_chat_ref(chat_id).get)
     return Chat.model_validate(snap.to_dict())
+
+
+def _write_encryption_mode_audit(payload: dict[str, Any]) -> None:
+    """Sync write into Firestore. Isolated so tests can patch a single seam."""
+    db.collection(ENCRYPTION_AUDIT_COLLECTION).add(payload)
+
+
+async def _log_encryption_mode_change(
+    *,
+    chat_id: str,
+    previous_mode: str,
+    new_mode: str,
+    reason: str,
+    actor_uid: str | None,
+) -> None:
+    """Best-effort audit trail for SafeChat Mode transitions. Fail-open."""
+    payload: dict[str, Any] = {
+        "chat_id": chat_id,
+        "previous_mode": previous_mode,
+        "new_mode": new_mode,
+        "reason": reason,  # "toggle" (user action) | "unfollow" (system-forced)
+        "actor_uid": actor_uid,
+        "created_at": firestore.SERVER_TIMESTAMP,
+    }
+    try:
+        await asyncio.to_thread(_write_encryption_mode_audit, payload)
+    except Exception:
+        logger.warning(
+            "Failed to write encryption-mode audit log (chat_id=%s)", chat_id, exc_info=True
+        )
+
+
+async def set_encryption_mode(chat_id: str, requesting_uid: str, mode: str) -> Chat:
+    """Toggle a chat's SafeChat Mode (`encryption_mode`) between two states.
+
+    Gate: only participants may change the mode, and only between mutual
+    followers — non-mutual chats are always forced into "pending" (moderated).
+
+    Raises:
+        ChatNotFound: if the chat document does not exist.
+        NotAuthorized: if requesting_uid is not a participant in the chat.
+        NotMutualFollow: if the two participants do not mutually follow each other.
+    """
+    chat_snap = await asyncio.to_thread(_chat_ref(chat_id).get)
+    if not chat_snap.exists:
+        raise ChatNotFound(chat_id)
+
+    chat_data = chat_snap.to_dict() or {}
+    participants = chat_data.get("participants", [])
+    if requesting_uid not in participants:
+        raise NotAuthorized(requesting_uid)
+
+    other_uid = next((uid for uid in participants if uid != requesting_uid), None)
+    if other_uid is None or not await follows_service.is_mutual_follow(
+        requesting_uid, other_uid
+    ):
+        raise NotMutualFollow(chat_id)
+
+    previous_mode = chat_data.get("encryption_mode", "pending")
+    await asyncio.to_thread(
+        _chat_ref(chat_id).update,
+        {"encryption_mode": mode, "updated_at": firestore.SERVER_TIMESTAMP},
+    )
+
+    if previous_mode != mode:
+        await _log_encryption_mode_change(
+            chat_id=chat_id,
+            previous_mode=previous_mode,
+            new_mode=mode,
+            reason="toggle",
+            actor_uid=requesting_uid,
+        )
+
+    snap = await asyncio.to_thread(_chat_ref(chat_id).get)
+    return Chat.model_validate(snap.to_dict())
+
+
+async def revert_chat_to_pending_if_trusted(uid_a: str, uid_b: str) -> None:
+    """After an unfollow, force a "trusted" chat between uid_a/uid_b back to "pending".
+
+    No-op if the chat doesn't exist or is already "pending". Called from the
+    unfollow route — breaking mutual-follow status must immediately restore
+    moderation, since SafeChat Mode is only available between mutual followers.
+    """
+    if uid_a == uid_b:
+        return
+
+    chat_id = f"{min(uid_a, uid_b)}_{max(uid_a, uid_b)}"
+    chat_snap = await asyncio.to_thread(_chat_ref(chat_id).get)
+    if not chat_snap.exists:
+        return
+
+    chat_data = chat_snap.to_dict() or {}
+    if chat_data.get("encryption_mode") != "trusted":
+        return
+
+    await asyncio.to_thread(
+        _chat_ref(chat_id).update,
+        {"encryption_mode": "pending", "updated_at": firestore.SERVER_TIMESTAMP},
+    )
+    logger.info("Chat %s forced trusted -> pending after unfollow.", chat_id)
+    await _log_encryption_mode_change(
+        chat_id=chat_id,
+        previous_mode="trusted",
+        new_mode="pending",
+        reason="unfollow",
+        actor_uid=None,
+    )
 
 
 async def send_message(
@@ -147,6 +264,63 @@ async def send_message(
     if sender_uid not in chat_data.get("participants", []):
         raise NotAuthorized(sender_uid)
 
+    is_trusted = chat_data.get("encryption_mode", "pending") == "trusted"
+
+    message_id = str(uuid.uuid4())
+    now = firestore.SERVER_TIMESTAMP
+
+    if is_trusted:
+        # SafeChat Mode is OFF for this chat: `text` is already client-side E2E
+        # ciphertext. The moderation pipeline never sees plaintext here — skip
+        # it entirely, per the SafeChat Mode spec.
+        message_data: dict[str, Any] = {
+            "id": message_id,
+            "chat_id": chat_id,
+            "sender_uid": sender_uid,
+            "text": text,
+            "image_url": image_url,
+            "status": "approved",
+            "encrypted": True,
+            "read_at": None,
+            "created_at": now,
+            "updated_at": now,
+            "schema_version": 1,
+        }
+        preview_text = _ENCRYPTED_PLACEHOLDER
+        notification_text = _ENCRYPTED_PLACEHOLDER
+
+        def _write() -> None:
+            batch = db.batch()
+            batch.set(_message_ref(chat_id, message_id), message_data)
+            batch.update(
+                _chat_ref(chat_id),
+                {
+                    "last_message_text": preview_text,
+                    "last_message_at": firestore.SERVER_TIMESTAMP,
+                    "updated_at": firestore.SERVER_TIMESTAMP,
+                },
+            )
+            batch.commit()
+
+        await asyncio.to_thread(_write)
+        snap = await asyncio.to_thread(_message_ref(chat_id, message_id).get)
+        message = Message.model_validate(snap.to_dict())
+
+        participants = chat_data.get("participants", [])
+        recipient_uid = next((uid for uid in participants if uid != sender_uid), None)
+        if recipient_uid:
+            sender_snap = await asyncio.to_thread(
+                db.collection(USERS_COLLECTION).document(sender_uid).get
+            )
+            display_name: str = (sender_snap.to_dict() or {}).get("display_name") or "Someone"
+            asyncio.create_task(
+                send_message_notification(
+                    recipient_uid, display_name, notification_text, chat_id
+                )
+            )
+
+        return message
+
     result = await moderate_text(text)
 
     if result.blocked and not submit_for_review:
@@ -174,9 +348,7 @@ async def send_message(
         author_username = (sender_snap.to_dict() or {}).get("username") or "unknown"
         logger.info("Message saved as pending_review (layer=%s); not delivered.", result.layer)
 
-    message_id = str(uuid.uuid4())
-    now = firestore.SERVER_TIMESTAMP
-    message_data: dict[str, Any] = {
+    message_data = {
         "id": message_id,
         "chat_id": chat_id,
         "sender_uid": sender_uid,

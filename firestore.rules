@@ -55,6 +55,11 @@ service cloud.firestore {
       allow read, write: if false;
     }
 
+    // SafeChat Mode (encryption_mode) transition audit trail — backend-only.
+    match /encryption_mode_audit_logs/{logId} {
+      allow read, write: if false;
+    }
+
     // Default: deny. New collections must opt in above.
     match /{document=**} {
       allow read, write: if false;

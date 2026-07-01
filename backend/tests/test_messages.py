@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import uuid
 from collections.abc import Iterator
 from datetime import UTC, datetime
 from typing import Any
@@ -15,6 +16,7 @@ from main import app
 from middleware.auth import get_current_user_claims
 from models.message import Chat, Message
 from models.moderation import Match, ModerationResult
+from services import follows as follows_service
 from services import messages as messages_service
 
 # --------------------------------------------------------------------------
@@ -136,6 +138,12 @@ class _FakeCollection:
     def stream(self) -> list[_FakeSnapshot]:
         return [_FakeSnapshot(k, v) for k, v in self._store.items()]
 
+    def add(self, data: dict[str, Any]) -> tuple[None, _FakeDocRef]:
+        doc_id = str(uuid.uuid4())
+        ref = self.document(doc_id)
+        ref.set(data)
+        return (None, ref)
+
 
 class _FakeBatch:
     """Mirrors the WriteBatch interface used by db.batch()."""
@@ -202,6 +210,7 @@ def _seed_chat(
     fake_db: _FakeDB,
     chat_id: str = "uid-1_uid-2",
     participants: list[str] | None = None,
+    encryption_mode: str = "pending",
 ) -> None:
     now = datetime(2026, 5, 18, tzinfo=UTC)
     fake_db.collection("chats").document(chat_id).set(
@@ -210,6 +219,7 @@ def _seed_chat(
             "participants": participants or ["uid-1", "uid-2"],
             "last_message_text": None,
             "last_message_at": None,
+            "encryption_mode": encryption_mode,
             "created_at": now,
             "updated_at": now,
             "schema_version": 1,
@@ -372,6 +382,130 @@ async def test_send_message_non_participant_raises_not_authorized(
 
     with pytest.raises(messages_service.NotAuthorized):
         await messages_service.send_message("uid-1_uid-2", "uid-outsider", "Hello!")
+
+
+@pytest.mark.asyncio
+async def test_send_message_trusted_mode_skips_moderation(
+    fake_db: _FakeDB, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _seed_chat(fake_db, encryption_mode="trusted")
+
+    async def fake_moderate(text: str) -> ModerationResult:
+        raise AssertionError("moderation must be skipped for trusted chats")
+
+    monkeypatch.setattr(messages_service, "moderate_text", fake_moderate)
+
+    msg = await messages_service.send_message("uid-1_uid-2", "uid-1", "ciphertext-blob")
+
+    assert msg.status == "approved"
+    assert msg.encrypted is True
+    assert msg.text == "ciphertext-blob"
+    # Chat preview shows a placeholder, never the raw ciphertext.
+    assert fake_db.chats["uid-1_uid-2"]["last_message_text"] != "ciphertext-blob"
+
+
+@pytest.mark.asyncio
+async def test_send_message_pending_mode_sets_encrypted_false(
+    fake_db: _FakeDB, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _seed_chat(fake_db, encryption_mode="pending")
+
+    async def fake_moderate(text: str) -> ModerationResult:
+        return ModerationResult(blocked=False, content_hash="h")
+
+    monkeypatch.setattr(messages_service, "moderate_text", fake_moderate)
+
+    msg = await messages_service.send_message("uid-1_uid-2", "uid-1", "Hey there!")
+
+    assert msg.encrypted is False
+
+
+@pytest.mark.asyncio
+async def test_set_encryption_mode_requires_mutual_follow(
+    fake_db: _FakeDB, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _seed_chat(fake_db)
+
+    async def fake_mutual(uid1: str, uid2: str) -> bool:
+        return False
+
+    monkeypatch.setattr(follows_service, "is_mutual_follow", fake_mutual)
+
+    with pytest.raises(messages_service.NotMutualFollow):
+        await messages_service.set_encryption_mode("uid-1_uid-2", "uid-1", "trusted")
+
+    # Mode must be untouched.
+    assert fake_db.chats["uid-1_uid-2"]["encryption_mode"] == "pending"
+
+
+@pytest.mark.asyncio
+async def test_set_encryption_mode_toggles_when_mutual(
+    fake_db: _FakeDB, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _seed_chat(fake_db)
+
+    async def fake_mutual(uid1: str, uid2: str) -> bool:
+        return True
+
+    monkeypatch.setattr(follows_service, "is_mutual_follow", fake_mutual)
+
+    chat = await messages_service.set_encryption_mode("uid-1_uid-2", "uid-1", "trusted")
+
+    assert chat.encryption_mode == "trusted"
+    assert fake_db.chats["uid-1_uid-2"]["encryption_mode"] == "trusted"
+    audit = fake_db._stores.get("encryption_mode_audit_logs", {})
+    assert len(audit) == 1
+    entry = next(iter(audit.values()))
+    assert entry["reason"] == "toggle"
+    assert entry["previous_mode"] == "pending"
+    assert entry["new_mode"] == "trusted"
+
+
+@pytest.mark.asyncio
+async def test_set_encryption_mode_non_participant_raises(
+    fake_db: _FakeDB,
+) -> None:
+    _seed_chat(fake_db)
+
+    with pytest.raises(messages_service.NotAuthorized):
+        await messages_service.set_encryption_mode("uid-1_uid-2", "uid-outsider", "trusted")
+
+
+@pytest.mark.asyncio
+async def test_revert_chat_to_pending_if_trusted_reverts(
+    fake_db: _FakeDB,
+) -> None:
+    _seed_chat(fake_db, encryption_mode="trusted")
+
+    await messages_service.revert_chat_to_pending_if_trusted("uid-1", "uid-2")
+
+    assert fake_db.chats["uid-1_uid-2"]["encryption_mode"] == "pending"
+    audit = fake_db._stores.get("encryption_mode_audit_logs", {})
+    assert len(audit) == 1
+    entry = next(iter(audit.values()))
+    assert entry["reason"] == "unfollow"
+    assert entry["actor_uid"] is None
+
+
+@pytest.mark.asyncio
+async def test_revert_chat_to_pending_if_trusted_noop_when_already_pending(
+    fake_db: _FakeDB,
+) -> None:
+    _seed_chat(fake_db, encryption_mode="pending")
+
+    await messages_service.revert_chat_to_pending_if_trusted("uid-1", "uid-2")
+
+    assert fake_db.chats["uid-1_uid-2"]["encryption_mode"] == "pending"
+    assert fake_db._stores.get("encryption_mode_audit_logs", {}) == {}
+
+
+@pytest.mark.asyncio
+async def test_revert_chat_to_pending_if_trusted_noop_when_no_chat(
+    fake_db: _FakeDB,
+) -> None:
+    # No chat seeded — must not raise.
+    await messages_service.revert_chat_to_pending_if_trusted("uid-a", "uid-b")
+    assert fake_db.chats == {}
 
 
 @pytest.mark.asyncio
@@ -597,3 +731,57 @@ def test_patch_read_returns_204(client: TestClient, monkeypatch: pytest.MonkeyPa
 
     assert response.status_code == 204
     assert response.content == b""
+
+
+def test_patch_encryption_mode_returns_200(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _override_claims({"uid": "uid-1", "admin": False})
+
+    async def fake_set_mode(chat_id: str, requesting_uid: str, mode: str) -> Chat:
+        return _sample_chat(encryption_mode=mode)
+
+    monkeypatch.setattr(messages_service, "set_encryption_mode", fake_set_mode)
+
+    response = client.patch(
+        "/api/v1/chats/uid-1_uid-2/encryption-mode", json={"mode": "trusted"}
+    )
+
+    assert response.status_code == 200
+    assert response.json()["data"]["encryption_mode"] == "trusted"
+
+
+def test_patch_encryption_mode_non_mutual_follow_returns_403(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _override_claims({"uid": "uid-1", "admin": False})
+
+    async def fake_set_mode(chat_id: str, requesting_uid: str, mode: str) -> Chat:
+        raise messages_service.NotMutualFollow(chat_id)
+
+    monkeypatch.setattr(messages_service, "set_encryption_mode", fake_set_mode)
+
+    response = client.patch(
+        "/api/v1/chats/uid-1_uid-2/encryption-mode", json={"mode": "trusted"}
+    )
+
+    assert response.status_code == 403
+    assert response.json()["error"]["code"] == "FORBIDDEN"
+
+
+def test_patch_encryption_mode_non_participant_returns_403(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _override_claims({"uid": "uid-outsider", "admin": False})
+
+    async def fake_set_mode(chat_id: str, requesting_uid: str, mode: str) -> Chat:
+        raise messages_service.NotAuthorized(requesting_uid)
+
+    monkeypatch.setattr(messages_service, "set_encryption_mode", fake_set_mode)
+
+    response = client.patch(
+        "/api/v1/chats/uid-1_uid-2/encryption-mode", json={"mode": "trusted"}
+    )
+
+    assert response.status_code == 403
+    assert response.json()["error"]["code"] == "FORBIDDEN"

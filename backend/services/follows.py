@@ -99,6 +99,15 @@ async def is_following(follower_uid: str, followee_uid: str) -> bool:
     return bool(snapshot.exists)
 
 
+async def is_mutual_follow(uid1: str, uid2: str) -> bool:
+    """Check if uid1 and uid2 follow each other (both directions)."""
+    a_follows_b, b_follows_a = await asyncio.gather(
+        is_following(uid1, uid2),
+        is_following(uid2, uid1),
+    )
+    return a_follows_b and b_follows_a
+
+
 async def get_followers(uid: str) -> list[str]:
     """Return the list of uids that follow uid."""
 

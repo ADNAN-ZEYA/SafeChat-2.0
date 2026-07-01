@@ -16,6 +16,7 @@ from models.user import DeviceTokenRequest, UpdateProfileRequest
 from moderation.engine import moderate_text
 from services import blocks as blocks_service
 from services import follows as follows_service
+from services import messages as messages_service
 from services import posts as posts_service
 from services import storage as storage_service
 from services import users as users_service
@@ -194,6 +195,12 @@ async def unfollow_user(
         raise _user_not_found(uid)
 
     await follows_service.unfollow_user(follower_uid, uid)
+
+    # Breaking mutual-follow status revokes SafeChat Mode (E2E encryption) —
+    # a chat between these two users can only stay "trusted" while they
+    # mutually follow each other.
+    await messages_service.revert_chat_to_pending_if_trusted(follower_uid, uid)
+
     return Response(status_code=204)
 
 

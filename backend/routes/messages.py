@@ -11,7 +11,7 @@ from fastapi import APIRouter, Depends, HTTPException, Response
 from fastapi.responses import JSONResponse
 
 from middleware.auth import get_current_user_claims
-from models.message import SendMessageRequest
+from models.message import EncryptionModeRequest, SendMessageRequest
 from models.moderation import Match
 from services import messages as messages_service
 
@@ -97,6 +97,40 @@ async def mark_message_read(
         raise _forbidden() from exc
 
     return Response(status_code=204)
+
+
+@router.patch("/{chat_id}/encryption-mode")
+async def update_encryption_mode(
+    chat_id: str,
+    payload: EncryptionModeRequest,
+    claims: dict[str, Any] = Depends(get_current_user_claims),
+) -> JSONResponse:
+    """Toggle SafeChat Mode for a chat. Only allowed between mutual followers."""
+    try:
+        chat = await messages_service.set_encryption_mode(
+            chat_id=chat_id,
+            requesting_uid=claims["uid"],
+            mode=payload.mode,
+        )
+    except messages_service.ChatNotFound as exc:
+        raise _chat_not_found(chat_id) from exc
+    except messages_service.NotAuthorized as exc:
+        raise _forbidden() from exc
+    except messages_service.NotMutualFollow as exc:
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "code": "FORBIDDEN",
+                "message": "SafeChat Mode can only be changed between mutual followers.",
+            },
+        ) from exc
+
+    return JSONResponse(
+        content={
+            "data": {"encryption_mode": chat.encryption_mode},
+            "meta": _meta(),
+        }
+    )
 
 
 @router.post("/{chat_id}/messages", status_code=201)
