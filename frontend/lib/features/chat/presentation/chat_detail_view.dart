@@ -51,8 +51,10 @@ class _ChatDetailViewState extends ConsumerState<ChatDetailView> {
     if (uid == null) return;
 
     try {
-      final otherDoc =
-          await FirebaseFirestore.instance.collection('users').doc(widget.otherUid).get();
+      final otherDoc = await FirebaseFirestore.instance
+          .collection('users')
+          .doc(widget.otherUid)
+          .get();
       final otherPublicKeyB64 = otherDoc.data()?['public_key'] as String?;
       if (otherPublicKeyB64 == null) return;
 
@@ -73,7 +75,8 @@ class _ChatDetailViewState extends ConsumerState<ChatDetailView> {
 
     final messenger = ScaffoldMessenger.of(context);
     final dio = ref.read(dioProvider);
-    final mode = ref.read(chatEncryptionModeProvider(widget.chatId)).value ?? 'pending';
+    final mode =
+        ref.read(chatEncryptionModeProvider(widget.chatId)).value ?? 'pending';
 
     if (mode == 'trusted') {
       final sharedKey = _sharedKey;
@@ -88,7 +91,9 @@ class _ChatDetailViewState extends ConsumerState<ChatDetailView> {
         return;
       }
       try {
-        final ciphertext = await ref.read(encryptionServiceProvider).encryptText(text, sharedKey);
+        final ciphertext = await ref
+            .read(encryptionServiceProvider)
+            .encryptText(text, sharedKey);
         await dio.post(
           '/api/v1/chats/${widget.chatId}/messages',
           data: {'text': ciphertext, 'submit_for_review': false},
@@ -108,7 +113,8 @@ class _ChatDetailViewState extends ConsumerState<ChatDetailView> {
         '/api/v1/chats/${widget.chatId}/messages',
         data: {'text': text, 'submit_for_review': submitForReview},
         options: Options(
-          validateStatus: (s) => s != null && ((s >= 200 && s < 300) || s == 422),
+          validateStatus: (s) =>
+              s != null && ((s >= 200 && s < 300) || s == 422),
         ),
       );
     }
@@ -154,12 +160,14 @@ class _ChatDetailViewState extends ConsumerState<ChatDetailView> {
       context: context,
       builder: (ctx) => AlertDialog(
         title: Text(
-          turningEncryptionOn ? 'Turn SafeChat Mode OFF?' : 'Turn SafeChat Mode ON?',
+          turningEncryptionOn
+              ? 'Turn SafeChat Mode OFF?'
+              : 'Turn SafeChat Mode ON?',
         ),
         content: Text(
           turningEncryptionOn
               ? 'Messages will now be end-to-end encrypted — SafeChat can no '
-                  'longer see or moderate them.'
+                    'longer see or moderate them.'
               : 'SafeChat will now analyze messages in this chat for your safety.',
         ),
         actions: [
@@ -196,7 +204,9 @@ class _ChatDetailViewState extends ConsumerState<ChatDetailView> {
         );
       } else {
         messenger.showSnackBar(
-          SnackBar(content: Text('Failed to update SafeChat Mode: ${e.message}')),
+          SnackBar(
+            content: Text('Failed to update SafeChat Mode: ${e.message}'),
+          ),
         );
       }
     }
@@ -221,9 +231,13 @@ class _ChatDetailViewState extends ConsumerState<ChatDetailView> {
         title: Text(widget.otherUserName),
         actions: [
           if (isMutualFollow)
-            ref.watch(chatEncryptionModeProvider(widget.chatId)).when(
+            ref
+                .watch(chatEncryptionModeProvider(widget.chatId))
+                .when(
                   data: (mode) => IconButton(
-                    icon: Icon(mode == 'trusted' ? Icons.lock : Icons.lock_open),
+                    icon: Icon(
+                      mode == 'trusted' ? Icons.lock : Icons.lock_open,
+                    ),
                     tooltip: mode == 'trusted'
                         ? 'SafeChat Mode is OFF — messages are end-to-end encrypted'
                         : 'SafeChat Mode is ON — messages are moderated',
@@ -347,7 +361,9 @@ class _ChatDetailViewState extends ConsumerState<ChatDetailView> {
 
     return FutureBuilder<String>(
       key: key,
-      future: ref.read(encryptionServiceProvider).decryptText(rawText, sharedKey),
+      future: ref
+          .read(encryptionServiceProvider)
+          .decryptText(rawText, sharedKey),
       builder: (context, snapshot) {
         final displayText = snapshot.hasData
             ? snapshot.data!

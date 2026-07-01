@@ -55,9 +55,7 @@ class AuthController extends Notifier<AuthState> {
   void _ensureE2eKeys(String uid) {
     final dio = ref.read(dioProvider);
     final encryption = ref.read(encryptionServiceProvider);
-    unawaited(
-      encryption.ensureKeyPairPublished(uid, dio).catchError((_) {}),
-    );
+    unawaited(encryption.ensureKeyPairPublished(uid, dio).catchError((_) {}));
   }
 
   Future<void> signUpWithEmailAndPassword({

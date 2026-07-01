@@ -14,7 +14,7 @@ import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 /// docs/DATABASE_SCHEMA.md section 10).
 class EncryptionService {
   EncryptionService({FlutterSecureStorage? secureStorage})
-      : _secureStorage = secureStorage ?? const FlutterSecureStorage();
+    : _secureStorage = secureStorage ?? const FlutterSecureStorage();
 
   final FlutterSecureStorage _secureStorage;
   static final X25519 _keyAlgorithm = X25519();
@@ -59,9 +59,7 @@ class EncryptionService {
     final privateB64 = await _secureStorage.read(
       key: _privateKeyStorageKey(uid),
     );
-    final publicB64 = await _secureStorage.read(
-      key: _publicKeyStorageKey(uid),
-    );
+    final publicB64 = await _secureStorage.read(key: _publicKeyStorageKey(uid));
     if (privateB64 == null || publicB64 == null) {
       throw StateError(
         'No local E2E keypair for this account yet — reopen the app to generate one.',
