@@ -56,3 +56,32 @@ jobs:
             -Dsonar.projectKey=ADNAN-ZEYA_SafeChat-2.0
             -Dsonar.organization=adnan-zeya
             -Dsonar.sources=lib
+
+      - name: 🔑 Write .env for release build
+        # This app reads its backend URL via flutter_dotenv (.env), NOT
+        # --dart-define / String.fromEnvironment — see
+        # lib/core/network/dio_client.dart. A --dart-define here would be
+        # silently ignored by the app, so the deployed backend URL is
+        # written into .env instead, overwriting the empty dummy file from
+        # the "Create dummy .env" step above.
+        #
+        # TODO(adnan): API_BASE_URL is not currently defined anywhere in this
+        # repo's secrets — confirm the exact secret name and add it to the
+        # "production" environment (Settings > Environments > production),
+        # the same scope GCP_SA_KEY / GCP_PROJECT_ID already live in.
+        run: |
+          if [ -z "${{ secrets.API_BASE_URL }}" ]; then
+            echo "::error::secrets.API_BASE_URL is not set in the 'production' environment. Add it before this build can target the real backend."
+            exit 1
+          fi
+          echo "API_BASE_URL=${{ secrets.API_BASE_URL }}" > .env
+
+      - name: 🏗️ Build release APK
+        run: flutter build apk --release
+
+      - name: 📦 Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: safechat-release-apk
+          path: frontend/build/app/outputs/flutter-apk/app-release.apk
+          retention-days: 14
