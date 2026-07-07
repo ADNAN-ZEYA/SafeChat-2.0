@@ -1,0 +1,118 @@
+name: Auto-Assign Reviewers
+
+# Requests reviews from the CODEOWNERS of the changed files (GOVERNANCE.md §5).
+# CODEOWNERS is parsed dynamically: onboarding a new developer requires only
+# editing .github/CODEOWNERS — never this workflow. The PR author is never
+# requested as their own reviewer.
+on:
+  pull_request:
+    types: [opened, ready_for_review]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  assign-reviewers:
+    runs-on: ubuntu-latest
+    if: github.event.pull_request.draft == false
+    steps:
+      - name: 👥 Request reviews from matching CODEOWNERS
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const pr = context.payload.pull_request;
+
+            // ---- 1. Load and parse .github/CODEOWNERS -------------------
+            let codeownersRaw = '';
+            try {
+              const { data } = await github.rest.repos.getContent({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                path: '.github/CODEOWNERS',
+                ref: pr.base.ref,
+              });
+              codeownersRaw = Buffer.from(data.content, 'base64').toString('utf8');
+            } catch (e) {
+              core.warning('.github/CODEOWNERS not found — no reviewers assigned.');
+              return;
+            }
+
+            const rules = codeownersRaw
+              .split('\n')
+              .map(l => l.trim())
+              .filter(l => l && !l.startsWith('#'))
+              .map(l => {
+                const parts = l.split(/\s+/);
+                return {
+                  pattern: parts[0],
+                  owners: parts.slice(1)
+                    .filter(o => o.startsWith('@'))
+                    .map(o => o.substring(1)),
+                };
+              });
+
+            function matches(pattern, file) {
+              if (pattern === '*') return true;
+              let p = pattern;
+              const anchored = p.startsWith('/');
+              if (anchored) p = p.substring(1);
+              if (p.endsWith('/')) {
+                return anchored
+                  ? file.startsWith(p)
+                  : (file.startsWith(p) || file.includes('/' + p));
+              }
+              if (p.startsWith('*.')) {
+                return file.endsWith(p.substring(1));
+              }
+              return anchored
+                ? (file === p || file.startsWith(p + '/'))
+                : (file === p || file.endsWith('/' + p));
+            }
+
+            function ownersFor(file) {
+              let owners = [];
+              for (const rule of rules) {
+                if (matches(rule.pattern, file)) owners = rule.owners; // last match wins
+              }
+              return owners;
+            }
+
+            // ---- 2. Collect owners of the changed files -----------------
+            const files = await github.paginate(
+              github.rest.pulls.listFiles,
+              { owner: context.repo.owner, repo: context.repo.repo, pull_number: pr.number }
+            );
+            const owners = new Set();
+            for (const f of files) {
+              for (const o of ownersFor(f.filename)) owners.add(o);
+            }
+
+            // Never request a review from the PR author.
+            owners.delete(pr.user.login);
+
+            // Skip users already requested.
+            for (const r of pr.requested_reviewers || []) owners.delete(r.login);
+
+            if (owners.size === 0) {
+              core.info('No eligible CODEOWNER reviewers to request (author excluded).');
+              return;
+            }
+
+            // ---- 3. Request the reviews ---------------------------------
+            // Requested one-by-one so a single non-collaborator doesn't fail
+            // the whole batch (GitHub rejects review requests for users
+            // without repository access).
+            for (const reviewer of owners) {
+              try {
+                await github.rest.pulls.requestReviewers({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  pull_number: pr.number,
+                  reviewers: [reviewer],
+                });
+                core.info(`Requested review from @${reviewer}.`);
+              } catch (e) {
+                core.warning(`Could not request review from @${reviewer}: ${e.message}`);
+              }
+            }

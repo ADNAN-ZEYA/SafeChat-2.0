@@ -1,0 +1,247 @@
+name: AI Review
+
+# Lightweight per-PR CI: auto-detects the stacks present in the repository
+# (Node.js, Flutter, Python) and runs whichever lint/test commands are
+# configured, skipping gracefully when a stack or its scripts are absent.
+# Results are summarized in a single PR comment.
+on:
+  pull_request:
+    types: [opened, reopened, synchronize]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    # Secrets used by the backend test suite (FIREBASE_ADMIN_SDK_KEY) live in
+    # the `production` environment — same scope the other CI workflows use.
+    environment: production
+    steps:
+      - name: 🛒 Checkout code
+        uses: actions/checkout@v4
+
+      # ========================================================
+      # Stack detection
+      # ========================================================
+      - name: 🔎 Detect project stacks
+        id: detect
+        run: |
+          set -euo pipefail
+
+          NODE_DIR=""
+          for d in . frontend/functions; do
+            if [ -f "$d/package.json" ]; then NODE_DIR="$d"; break; fi
+          done
+
+          FLUTTER_DIR=""
+          for d in . frontend; do
+            if [ -f "$d/pubspec.yaml" ]; then FLUTTER_DIR="$d"; break; fi
+          done
+
+          PYTHON_DIR=""
+          for d in backend .; do
+            if [ -f "$d/requirements.txt" ] || [ -f "$d/pyproject.toml" ]; then PYTHON_DIR="$d"; break; fi
+          done
+
+          echo "node_dir=$NODE_DIR"       >> "$GITHUB_OUTPUT"
+          echo "flutter_dir=$FLUTTER_DIR" >> "$GITHUB_OUTPUT"
+          echo "python_dir=$PYTHON_DIR"   >> "$GITHUB_OUTPUT"
+          echo "Detected — node: '${NODE_DIR:-none}', flutter: '${FLUTTER_DIR:-none}', python: '${PYTHON_DIR:-none}'"
+
+      # ========================================================
+      # Node.js
+      # ========================================================
+      - name: 🟢 Setup Node.js
+        if: steps.detect.outputs.node_dir != ''
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: 🟢 npm ci
+        if: steps.detect.outputs.node_dir != ''
+        id: node_install
+        continue-on-error: true
+        working-directory: ${{ steps.detect.outputs.node_dir }}
+        run: npm ci
+
+      - name: 🟢 npm lint (if defined)
+        if: steps.detect.outputs.node_dir != '' && steps.node_install.outcome == 'success'
+        id: node_lint
+        continue-on-error: true
+        working-directory: ${{ steps.detect.outputs.node_dir }}
+        run: npm run lint --if-present
+
+      - name: 🟢 npm test (if defined)
+        if: steps.detect.outputs.node_dir != '' && steps.node_install.outcome == 'success'
+        id: node_test
+        continue-on-error: true
+        working-directory: ${{ steps.detect.outputs.node_dir }}
+        run: npm test --if-present
+
+      # ========================================================
+      # Flutter
+      # ========================================================
+      - name: 🐦 Setup Flutter
+        if: steps.detect.outputs.flutter_dir != ''
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.x'
+          channel: 'stable'
+
+      - name: 🐦 flutter pub get
+        if: steps.detect.outputs.flutter_dir != ''
+        id: flutter_deps
+        continue-on-error: true
+        working-directory: ${{ steps.detect.outputs.flutter_dir }}
+        # The app declares .env as a flutter_dotenv asset; CI needs the file
+        # to exist (same trick as flutter-ci.yml).
+        run: |
+          touch .env
+          flutter pub get
+
+      - name: 🐦 flutter analyze
+        if: steps.detect.outputs.flutter_dir != '' && steps.flutter_deps.outcome == 'success'
+        id: flutter_analyze
+        continue-on-error: true
+        working-directory: ${{ steps.detect.outputs.flutter_dir }}
+        run: flutter analyze
+
+      - name: 🐦 flutter test
+        if: steps.detect.outputs.flutter_dir != '' && steps.flutter_deps.outcome == 'success'
+        id: flutter_test
+        continue-on-error: true
+        working-directory: ${{ steps.detect.outputs.flutter_dir }}
+        run: flutter test
+
+      # ========================================================
+      # Python / FastAPI
+      # ========================================================
+      - name: 🐍 Setup Python 3.11
+        if: steps.detect.outputs.python_dir != ''
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: 🐍 Install dependencies
+        if: steps.detect.outputs.python_dir != ''
+        id: python_install
+        continue-on-error: true
+        working-directory: ${{ steps.detect.outputs.python_dir }}
+        run: |
+          python -m pip install --upgrade pip
+          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+
+      - name: 🐍 ruff lint (if configured)
+        if: steps.detect.outputs.python_dir != '' && steps.python_install.outcome == 'success'
+        id: python_lint
+        continue-on-error: true
+        working-directory: ${{ steps.detect.outputs.python_dir }}
+        run: |
+          if [ -f pyproject.toml ] && grep -q "\[tool.ruff" pyproject.toml; then
+            pip install ruff
+            ruff check .
+          else
+            echo "ruff not configured — skipping"
+          fi
+
+      - name: 🐍 pytest (if tests exist and credentials are available)
+        if: steps.detect.outputs.python_dir != '' && steps.python_install.outcome == 'success'
+        id: python_test
+        continue-on-error: true
+        working-directory: ${{ steps.detect.outputs.python_dir }}
+        env:
+          GCP_PROJECT_ID: safechat-prod-66143
+          FIREBASE_ADMIN_KEY_PATH: ${{ github.workspace }}/ci-firebase-key.json
+          FIREBASE_ADMIN_SDK_KEY: ${{ secrets.FIREBASE_ADMIN_SDK_KEY }}
+        run: |
+          set -euo pipefail
+          if [ ! -d tests ]; then
+            echo "No tests/ directory — skipping"
+            exit 0
+          fi
+          if [ -z "$FIREBASE_ADMIN_SDK_KEY" ]; then
+            # Importing the app initialises the Firebase Admin SDK, which needs
+            # a structurally-valid SA key on disk (see deploy-backend.yml).
+            echo "FIREBASE_ADMIN_SDK_KEY secret unavailable — skipping pytest"
+            exit 0
+          fi
+          printf '%s' "$FIREBASE_ADMIN_SDK_KEY" > "$FIREBASE_ADMIN_KEY_PATH"
+          pytest
+
+      # ========================================================
+      # Summary comment
+      # ========================================================
+      - name: 📋 Post summary comment
+        if: always()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const detect = {
+              node: '${{ steps.detect.outputs.node_dir }}',
+              flutter: '${{ steps.detect.outputs.flutter_dir }}',
+              python: '${{ steps.detect.outputs.python_dir }}',
+            };
+            const icon = o =>
+              o === 'success' ? '✅ passed' :
+              o === 'failure' ? '❌ failed' :
+              '⏭️ skipped';
+
+            const rows = [];
+            const addRow = (stack, check, outcome) =>
+              rows.push(`| ${stack} | ${check} | ${icon(outcome)} |`);
+
+            if (detect.node) {
+              addRow('Node.js (`' + detect.node + '`)', 'npm ci',   '${{ steps.node_install.outcome }}');
+              addRow('Node.js', 'lint', '${{ steps.node_lint.outcome }}');
+              addRow('Node.js', 'test', '${{ steps.node_test.outcome }}');
+            }
+            if (detect.flutter) {
+              addRow('Flutter (`' + detect.flutter + '`)', 'pub get', '${{ steps.flutter_deps.outcome }}');
+              addRow('Flutter', 'analyze', '${{ steps.flutter_analyze.outcome }}');
+              addRow('Flutter', 'test',    '${{ steps.flutter_test.outcome }}');
+            }
+            if (detect.python) {
+              addRow('Python (`' + detect.python + '`)', 'install', '${{ steps.python_install.outcome }}');
+              addRow('Python', 'ruff', '${{ steps.python_lint.outcome }}');
+              addRow('Python', 'pytest', '${{ steps.python_test.outcome }}');
+            }
+
+            const detected = Object.entries(detect)
+              .filter(([, dir]) => dir)
+              .map(([stack, dir]) => `**${stack}** (\`${dir}\`)`)
+              .join(', ') || '_none_';
+
+            const failed = rows.filter(r => r.includes('❌')).length;
+            const marker = '<!-- ai-review -->';
+            const body =
+              marker + '\n## 🤖 AI Review — CI summary\n\n' +
+              `**Detected stacks:** ${detected}\n\n` +
+              '| Stack | Check | Result |\n|---|---|---|\n' +
+              rows.join('\n') + '\n\n' +
+              (failed === 0
+                ? '**Overall: ✅ all executed checks passed.**'
+                : `**Overall: ❌ ${failed} check(s) failed.**`);
+
+            const prNumber = context.payload.pull_request.number;
+            const existing = (await github.paginate(
+              github.rest.issues.listComments,
+              { owner: context.repo.owner, repo: context.repo.repo, issue_number: prNumber }
+            )).find(c => (c.body || '').includes(marker));
+
+            if (existing) {
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner, repo: context.repo.repo,
+                comment_id: existing.id, body,
+              });
+            } else {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner, repo: context.repo.repo,
+                issue_number: prNumber, body,
+              });
+            }
+
+            if (failed > 0) {
+              core.setFailed(`${failed} CI check(s) failed — see summary comment.`);
+            }

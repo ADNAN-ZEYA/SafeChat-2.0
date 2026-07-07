@@ -1,0 +1,31 @@
+# ============================================================
+# SafeChat 2.0 — CODEOWNERS
+# See GOVERNANCE.md for the full contribution rules.
+#
+# Later patterns take precedence over earlier ones.
+# Onboarding a new developer requires ONLY edits to this file
+# (plus adding them as a repository collaborator) — the
+# governance workflows parse this file dynamically.
+# ============================================================
+
+# default-backup: ADNAN-ZEYA
+# security-reviewer: ADNAN-ZEYA
+
+* @ADNAN-ZEYA
+
+# ------------------------------------------------------------
+# Protected governance files — only ADNAN-ZEYA may approve
+# changes to these paths. Do NOT add other owners here.
+# ------------------------------------------------------------
+/.github/workflows/ @ADNAN-ZEYA
+/.github/CODEOWNERS @ADNAN-ZEYA
+/GOVERNANCE.md @ADNAN-ZEYA
+
+# ------------------------------------------------------------
+# Future team members — uncomment and edit as people onboard.
+# Keep @ADNAN-ZEYA listed as backup owner on every path.
+# ------------------------------------------------------------
+# /frontend/           @ADNAN-ZEYA @flutter-dev-username
+# /backend/            @ADNAN-ZEYA @python-dev-username
+# /backend/moderation/ @ADNAN-ZEYA @ml-dev-username
+# /docs/               @ADNAN-ZEYA @docs-maintainer-username

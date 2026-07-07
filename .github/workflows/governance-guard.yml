@@ -1,0 +1,254 @@
+name: Governance Guard
+
+# Enforces GOVERNANCE.md:
+#   - PRs must reference an Issue with "Refs #<n>" (never Closes/Fixes/Resolves)
+#   - Architecture changes require docs/architecture/ updates (when it exists)
+#   - Issues may only be closed after a merged PR that referenced them
+on:
+  pull_request:
+    types: [opened, edited, synchronize]
+  issues:
+    types: [closed]
+
+permissions:
+  contents: read
+  issues: write
+  pull-requests: write
+  statuses: write
+
+jobs:
+  # ==========================================================
+  # PR governance validation
+  # ==========================================================
+  validate-pr:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - name: 🛡️ Validate PR against GOVERNANCE.md
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const pr = context.payload.pull_request;
+            const violations = [];
+
+            // Closing keywords are prohibited (GOVERNANCE.md §2): they
+            // auto-close Issues before reviewer verification.
+            const closingRe = /\b(close[sd]?|fix(e[sd])?|resolve[sd]?)\s*:?\s+#\d+/i;
+            const refsRe = /\brefs?\s*:?\s+#\d+/i;
+
+            const body = pr.body || '';
+
+            if (closingRe.test(body)) {
+              violations.push(
+                'PR **body** uses a closing keyword (`Closes/Fixes/Resolves #N`). ' +
+                'Use `Refs #N` instead — Issues are closed by the CODEOWNER ' +
+                'reviewer after merge (GOVERNANCE.md §2, §4).'
+              );
+            }
+
+            // Commit messages of this PR.
+            const commits = await github.paginate(
+              github.rest.pulls.listCommits,
+              { owner: context.repo.owner, repo: context.repo.repo, pull_number: pr.number }
+            );
+            let commitHasRef = false;
+            for (const c of commits) {
+              const msg = c.commit.message || '';
+              if (closingRe.test(msg)) {
+                violations.push(
+                  `Commit \`${c.sha.substring(0, 7)}\` uses a closing keyword ` +
+                  '(`Closes/Fixes/Resolves #N`). Use `Refs #N` instead ' +
+                  '(GOVERNANCE.md §2).'
+                );
+              }
+              if (refsRe.test(msg)) commitHasRef = true;
+            }
+
+            // At least one "Refs #N" somewhere (body or commits).
+            if (!refsRe.test(body) && !commitHasRef) {
+              violations.push(
+                'No Issue reference found. Every PR must reference an Issue ' +
+                'with `Refs #<number>` in its body or commit messages ' +
+                '(GOVERNANCE.md §2).'
+              );
+            }
+
+            // Architecture documentation check (GOVERNANCE.md §3). Only
+            // enforced while docs/architecture/ exists in the base branch —
+            // GOVERNANCE.md scopes the rule to "if that directory exists".
+            const archPaths = ['src/server/', 'src/api/', 'backend/', 'database/', 'infrastructure/'];
+            let archDirExists = true;
+            try {
+              await github.rest.repos.getContent({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                path: 'docs/architecture',
+                ref: pr.base.ref,
+              });
+            } catch (e) {
+              archDirExists = false;
+            }
+
+            if (archDirExists) {
+              const files = await github.paginate(
+                github.rest.pulls.listFiles,
+                { owner: context.repo.owner, repo: context.repo.repo, pull_number: pr.number }
+              );
+              const touchesArch = files.some(f => archPaths.some(p => f.filename.startsWith(p)));
+              const touchesArchDocs = files.some(f => f.filename.startsWith('docs/architecture/'));
+              if (touchesArch && !touchesArchDocs) {
+                violations.push(
+                  'This PR changes architecture-relevant paths (' +
+                  archPaths.join(', ') + ') but does not update ' +
+                  '`docs/architecture/` (GOVERNANCE.md §3).'
+                );
+              }
+            } else {
+              core.info('docs/architecture/ does not exist — architecture doc check skipped (GOVERNANCE.md §3).');
+            }
+
+            // ---- Report -------------------------------------------------
+            const marker = '<!-- governance-guard -->';
+            if (violations.length > 0) {
+              const commentBody =
+                marker + '\n## 🛡️ Governance violations\n\n' +
+                violations.map(v => `- ❌ ${v}`).join('\n') +
+                '\n\nSee [GOVERNANCE.md](../blob/' + pr.base.ref + '/GOVERNANCE.md) for the full rules.';
+
+              // Update the existing guard comment instead of stacking new ones.
+              const existing = (await github.paginate(
+                github.rest.issues.listComments,
+                { owner: context.repo.owner, repo: context.repo.repo, issue_number: pr.number }
+              )).find(c => (c.body || '').includes(marker));
+
+              if (existing) {
+                await github.rest.issues.updateComment({
+                  owner: context.repo.owner, repo: context.repo.repo,
+                  comment_id: existing.id, body: commentBody,
+                });
+              } else {
+                await github.rest.issues.createComment({
+                  owner: context.repo.owner, repo: context.repo.repo,
+                  issue_number: pr.number, body: commentBody,
+                });
+              }
+            }
+
+            await github.rest.repos.createCommitStatus({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              sha: pr.head.sha,
+              state: violations.length === 0 ? 'success' : 'failure',
+              context: 'governance-guard',
+              description: violations.length === 0
+                ? 'No governance violations'
+                : `${violations.length} governance violation(s) — see PR comment`,
+            });
+
+            if (violations.length > 0) {
+              core.setFailed(`${violations.length} governance violation(s) found.`);
+            }
+
+  # ==========================================================
+  # Issue-close validation (GOVERNANCE.md §4)
+  # ==========================================================
+  validate-issue-close:
+    if: github.event_name == 'issues' && github.event.action == 'closed'
+    runs-on: ubuntu-latest
+    steps:
+      - name: 🛡️ Verify Issue was closed via a merged PR
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const OWNER_LOGIN = 'ADNAN-ZEYA';
+            const issue = context.payload.issue;
+            const closer = context.payload.sender.login;
+
+            // Pull Requests are Issues too in the API — only govern real Issues.
+            if (issue.pull_request) {
+              core.info('Closed item is a PR, not an Issue — nothing to validate.');
+              return;
+            }
+
+            // The repository owner is the CODEOWNER reviewer of record and is
+            // exempt from automatic reopening (GOVERNANCE.md §4).
+            if (closer === OWNER_LOGIN) {
+              core.info(`Issue #${issue.number} closed by repository owner — allowed.`);
+              return;
+            }
+
+            // Find merged PRs that referenced this Issue via timeline
+            // cross-references.
+            const timeline = await github.paginate(
+              github.rest.issues.listEventsForTimeline,
+              { owner: context.repo.owner, repo: context.repo.repo, issue_number: issue.number }
+            );
+
+            let mergedReferencingPr = null;
+            for (const ev of timeline) {
+              if (ev.event !== 'cross-referenced') continue;
+              const src = ev.source && ev.source.issue;
+              if (!src || !src.pull_request) continue;
+              try {
+                const { data: pr } = await github.rest.pulls.get({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  pull_number: src.number,
+                });
+                if (pr.merged) { mergedReferencingPr = pr; break; }
+              } catch (e) { /* cross-reference from another repo — ignore */ }
+            }
+
+            const violations = [];
+            if (!mergedReferencingPr) {
+              violations.push(
+                'This Issue was closed without a **merged** Pull Request referencing it.'
+              );
+            } else if (mergedReferencingPr.user.login === closer) {
+              violations.push(
+                `This Issue was closed by @${closer}, the author of the referencing ` +
+                `PR #${mergedReferencingPr.number}. The PR author must never close ` +
+                'the Issue — closure is the CODEOWNER reviewer\'s action.'
+              );
+            }
+
+            if (violations.length === 0) {
+              core.info(`Issue #${issue.number} close is compliant (merged PR #${mergedReferencingPr.number}).`);
+              return;
+            }
+
+            // Reopen, label, and explain (GOVERNANCE.md §4).
+            await github.rest.issues.update({
+              owner: context.repo.owner, repo: context.repo.repo,
+              issue_number: issue.number, state: 'open',
+            });
+
+            try {
+              await github.rest.issues.getLabel({
+                owner: context.repo.owner, repo: context.repo.repo,
+                name: 'governance-violation',
+              });
+            } catch (e) {
+              await github.rest.issues.createLabel({
+                owner: context.repo.owner, repo: context.repo.repo,
+                name: 'governance-violation',
+                color: 'B60205',
+                description: 'Closed or modified in violation of GOVERNANCE.md',
+              });
+            }
+            await github.rest.issues.addLabels({
+              owner: context.repo.owner, repo: context.repo.repo,
+              issue_number: issue.number, labels: ['governance-violation'],
+            });
+
+            await github.rest.issues.createComment({
+              owner: context.repo.owner, repo: context.repo.repo,
+              issue_number: issue.number,
+              body:
+                '## 🛡️ Issue reopened — governance violation\n\n' +
+                violations.map(v => `- ❌ ${v}`).join('\n') +
+                '\n\nPer **GOVERNANCE.md §4 (Issue Closing Policy)**: Issues are ' +
+                'closed only after the referencing PR has been merged, and only by ' +
+                'the CODEOWNER reviewer — never by the PR author.\n\n' +
+                `_Closed by @${closer}; automatically reopened by governance-guard._`,
+            });

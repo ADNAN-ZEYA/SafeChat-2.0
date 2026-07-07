@@ -1,0 +1,158 @@
+name: PR Approval Check
+
+# Publishes the `approval-check` commit status (GOVERNANCE.md §5):
+#   success — an owning CODEOWNER (not the PR author) approved, or the
+#             self-merge exception applies
+#   pending — waiting for CODEOWNER approval
+#   failure — a CODEOWNER has requested changes
+on:
+  pull_request:
+    types: [opened, reopened, synchronize, ready_for_review]
+  pull_request_review:
+    types: [submitted, dismissed]
+
+permissions:
+  contents: read
+  pull-requests: read
+  statuses: write
+
+jobs:
+  approval-check:
+    runs-on: ubuntu-latest
+    steps:
+      - name: ✅ Evaluate CODEOWNER approvals
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const OWNER_LOGIN = 'ADNAN-ZEYA';
+            const pr = context.payload.pull_request;
+
+            // ---- 1. Load and parse .github/CODEOWNERS -------------------
+            // Parsed dynamically so onboarding needs only CODEOWNERS edits,
+            // never workflow changes (GOVERNANCE.md §6).
+            let codeownersRaw = '';
+            try {
+              const { data } = await github.rest.repos.getContent({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                path: '.github/CODEOWNERS',
+                ref: pr.base.ref,
+              });
+              codeownersRaw = Buffer.from(data.content, 'base64').toString('utf8');
+            } catch (e) {
+              core.setFailed('.github/CODEOWNERS not found on the base branch.');
+              return;
+            }
+
+            // rules: [{ pattern, owners: [logins] }] — file order preserved;
+            // per CODEOWNERS semantics the LAST matching pattern wins.
+            const rules = codeownersRaw
+              .split('\n')
+              .map(l => l.trim())
+              .filter(l => l && !l.startsWith('#'))
+              .map(l => {
+                const parts = l.split(/\s+/);
+                return {
+                  pattern: parts[0],
+                  owners: parts.slice(1)
+                    .filter(o => o.startsWith('@'))
+                    .map(o => o.substring(1)),
+                };
+              });
+
+            // Minimal CODEOWNERS pattern matcher covering the forms used in
+            // this repository: `*`, `/dir/`, `/file`, `dir/`, and `*.ext`.
+            function matches(pattern, file) {
+              if (pattern === '*') return true;
+              let p = pattern;
+              const anchored = p.startsWith('/');
+              if (anchored) p = p.substring(1);
+              if (p.endsWith('/')) {
+                return anchored
+                  ? file.startsWith(p)
+                  : (file.startsWith(p) || file.includes('/' + p));
+              }
+              if (p.startsWith('*.')) {
+                return file.endsWith(p.substring(1));
+              }
+              return anchored
+                ? (file === p || file.startsWith(p + '/'))
+                : (file === p || file.endsWith('/' + p));
+            }
+
+            function ownersFor(file) {
+              let owners = [];
+              for (const rule of rules) {
+                if (matches(rule.pattern, file)) owners = rule.owners; // last match wins
+              }
+              return owners;
+            }
+
+            // ---- 2. Owners of every changed file ------------------------
+            const files = await github.paginate(
+              github.rest.pulls.listFiles,
+              { owner: context.repo.owner, repo: context.repo.repo, pull_number: pr.number }
+            );
+            const requiredOwners = new Set();
+            for (const f of files) {
+              for (const o of ownersFor(f.filename)) requiredOwners.add(o);
+            }
+            core.info(`Changed files: ${files.length}; owning CODEOWNERS: ${[...requiredOwners].join(', ') || '(none)'}`);
+
+            // ---- 3. Current review state ---------------------------------
+            // Latest review per reviewer wins; PR author's reviews never count.
+            const reviews = await github.paginate(
+              github.rest.pulls.listReviews,
+              { owner: context.repo.owner, repo: context.repo.repo, pull_number: pr.number }
+            );
+            const latestByUser = new Map();
+            for (const r of reviews) {
+              if (!r.user || r.user.login === pr.user.login) continue;
+              if (['APPROVED', 'CHANGES_REQUESTED'].includes(r.state)) {
+                latestByUser.set(r.user.login, r.state);
+              }
+            }
+
+            const ownerApproved = [...requiredOwners].some(
+              o => latestByUser.get(o) === 'APPROVED'
+            );
+            const ownerRequestedChanges = [...requiredOwners].some(
+              o => latestByUser.get(o) === 'CHANGES_REQUESTED'
+            );
+
+            // ---- 4. Decide status ----------------------------------------
+            let state, description;
+
+            // Self-merge exception (GOVERNANCE.md §5): if the repository owner
+            // is the ONLY CODEOWNER covering every changed file and is also
+            // the PR author, no other eligible reviewer exists.
+            const soleOwner =
+              requiredOwners.size === 1 && requiredOwners.has(OWNER_LOGIN);
+
+            if (ownerRequestedChanges) {
+              state = 'failure';
+              description = 'A CODEOWNER has requested changes';
+            } else if (ownerApproved) {
+              state = 'success';
+              description = 'Approved by CODEOWNER';
+            } else if (soleOwner && pr.user.login === OWNER_LOGIN) {
+              state = 'success';
+              description = 'Self-merge allowed: owner is the only CODEOWNER for these files';
+            } else if (requiredOwners.size === 0) {
+              // No rule matched (shouldn't happen with the `*` fallback rule).
+              state = 'success';
+              description = 'No CODEOWNER rule matches the changed files';
+            } else {
+              state = 'pending';
+              description = `Waiting for CODEOWNER approval (${[...requiredOwners].join(', ')})`;
+            }
+
+            await github.rest.repos.createCommitStatus({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              sha: pr.head.sha,
+              state,
+              context: 'approval-check',
+              description: description.substring(0, 140),
+            });
+            core.info(`approval-check → ${state}: ${description}`);

@@ -1,0 +1,133 @@
+name: Protect Main
+
+# Enforces GOVERNANCE.md §1: only ADNAN-ZEYA (or a merged PR) may push
+# directly to main. Any other direct push is reverted (with `git revert` —
+# no history rewriting) and an explanatory Issue is opened for the pusher.
+on:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: write
+  issues: write
+
+jobs:
+  guard-direct-push:
+    runs-on: ubuntu-latest
+    # github-actions[bot] pushes are this workflow's own reverts — never
+    # re-process them or the workflow would loop on itself.
+    if: github.actor != 'github-actions[bot]'
+    steps:
+      - name: 🔎 Decide whether this push is allowed
+        id: decide
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const OWNER_LOGIN = 'ADNAN-ZEYA';
+            const actor = context.actor;
+
+            if (actor === OWNER_LOGIN) {
+              core.info(`Push by repository owner @${OWNER_LOGIN} — allowed (GOVERNANCE.md §1).`);
+              core.setOutput('allowed', 'true');
+              return;
+            }
+
+            // Allow pushes that are the result of a merged PR (merge commit
+            // lands on main with the merging user as actor).
+            const { data: prs } = await github.rest.repos.listPullRequestsAssociatedWithCommit({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              commit_sha: context.sha,
+            });
+            const mergedPr = prs.find(pr =>
+              pr.merged_at !== null && pr.merge_commit_sha === context.sha
+            );
+            if (mergedPr) {
+              core.info(`Push is merge of PR #${mergedPr.number} — allowed.`);
+              core.setOutput('allowed', 'true');
+              return;
+            }
+
+            core.warning(`Direct push to main by @${actor} — reverting per GOVERNANCE.md §1.`);
+            core.setOutput('allowed', 'false');
+
+      - name: 🛒 Checkout main
+        if: steps.decide.outputs.allowed == 'false'
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: ↩️ Revert the pushed commits (no history rewriting)
+        if: steps.decide.outputs.allowed == 'false'
+        id: revert
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          BEFORE="${{ github.event.before }}"
+          AFTER="${{ github.sha }}"
+
+          # List the commits being reverted (newest first) for the Issue body.
+          if git cat-file -e "$BEFORE" 2>/dev/null && [ "$BEFORE" != "0000000000000000000000000000000000000000" ]; then
+            RANGE="$BEFORE..$AFTER"
+          else
+            # Branch creation or unknown 'before' — revert only the head commit.
+            RANGE="$AFTER~1..$AFTER"
+          fi
+
+          SHAS=$(git rev-list "$RANGE")
+          echo "Reverting commits:"
+          echo "$SHAS"
+          {
+            echo "shas<<EOF"
+            echo "$SHAS"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+          # git revert creates NEW commits that undo the pushed ones —
+          # history is preserved, nothing is rewritten or force-pushed.
+          git revert --no-edit $SHAS
+
+          git push origin main
+
+      - name: 📣 Open an Issue for the pusher
+        if: steps.decide.outputs.allowed == 'false'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const shas = `${{ steps.revert.outputs.shas }}`
+              .split('\n').map(s => s.trim()).filter(Boolean);
+            const shaList = shas.map(s => `- \`${s}\``).join('\n');
+
+            await github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title: `Direct push to main by @${context.actor} was reverted`,
+              labels: ['governance-violation'],
+              body:
+                `Hi @${context.actor} 👋\n\n` +
+                'Your direct push to `main` was automatically **reverted** because ' +
+                'repository policy ([GOVERNANCE.md §1](../blob/main/GOVERNANCE.md)) ' +
+                'only allows @ADNAN-ZEYA to push directly to `main`. All other ' +
+                'contributors must work from feature branches and open Pull Requests.\n\n' +
+                '### Your work is NOT lost\n\n' +
+                'The original commit(s) still exist in the repository history:\n\n' +
+                shaList + '\n\n' +
+                '### How to recover\n\n' +
+                '```bash\n' +
+                '# 1. Create a feature branch from the current main\n' +
+                'git fetch origin\n' +
+                'git switch -c feature/my-change origin/main\n' +
+                '\n' +
+                '# 2. Cherry-pick your original commit(s), oldest first\n' +
+                shas.slice().reverse().map(s => `git cherry-pick ${s}`).join('\n') + '\n' +
+                '\n' +
+                '# 3. Push the branch and open a Pull Request\n' +
+                'git push -u origin feature/my-change\n' +
+                '```\n\n' +
+                'Then open a Pull Request referencing the relevant Issue with ' +
+                '`Refs #<number>` (see [GOVERNANCE.md §2](../blob/main/GOVERNANCE.md)).',
+            });
