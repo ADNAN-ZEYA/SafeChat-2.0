@@ -41,9 +41,7 @@ class _ChatDetailViewState extends ConsumerState<ChatDetailView> {
   /// a failure only means the badge clears on the next successful open.
   Future<void> _markChatRead() async {
     try {
-      await ref
-          .read(dioProvider)
-          .post('/api/v1/chats/${widget.chatId}/read');
+      await ref.read(dioProvider).post('/api/v1/chats/${widget.chatId}/read');
     } catch (_) {
       // Non-fatal — the badge will reset on a later open.
     }
