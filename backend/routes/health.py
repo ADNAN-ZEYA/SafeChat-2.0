@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import uuid
 from datetime import datetime, timezone
 from typing import Literal
@@ -25,6 +26,7 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/health", tags=["health"])
 
 DependencyStatus = Literal["ok", "error"]
+ConfigStatus = Literal["configured", "not_configured", "disabled"]
 
 
 def _probe_firestore() -> DependencyStatus:
@@ -62,6 +64,19 @@ async def get_health() -> JSONResponse:
     overall_ok = firestore_status == "ok" and auth_status == "ok"
     status_code = 200 if overall_ok else 503
 
+    # External moderation services: report configuration (not a live probe, to
+    # avoid per-health-check API cost). Overall health depends only on the
+    # hard dependencies above — these layers fail open by design.
+    openai_status: ConfigStatus = (
+        "configured" if settings.openai_api_key else "not_configured"
+    )
+    vision_enabled = os.getenv("SAFECHAT_VISION_ENABLED", "1") not in (
+        "0",
+        "false",
+        "False",
+    )
+    vision_status: ConfigStatus = "configured" if vision_enabled else "disabled"
+
     body = {
         "data": {
             "status": "ok" if overall_ok else "error",
@@ -70,6 +85,8 @@ async def get_health() -> JSONResponse:
             "dependencies": {
                 "firestore": firestore_status,
                 "firebase_auth": auth_status,
+                "openai": openai_status,
+                "vision": vision_status,
             },
         },
         "meta": {

@@ -89,6 +89,48 @@ def test_object_path_contains_uid_and_correct_extension(
     assert result.object_path.endswith(f".{expected_ext}")
 
 
+def test_generate_upload_url_supports_mp4_video(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(storage_service, "bucket", _FakeBucket())
+
+    result = storage_service.generate_upload_url("uid-1", "video/mp4", "post")
+
+    assert result.object_path.endswith(".mp4")
+
+
+def test_size_cap_allows_image_under_10mb(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(storage_service, "bucket", _FakeBucket())
+
+    result = storage_service.generate_upload_url(
+        "uid-1", "image/jpeg", "post", size_bytes=9 * 1024 * 1024
+    )
+    assert result.object_path.endswith(".jpg")
+
+
+def test_size_cap_rejects_image_over_10mb(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(storage_service, "bucket", _FakeBucket())
+
+    with pytest.raises(storage_service.FileTooLarge):
+        storage_service.generate_upload_url(
+            "uid-1", "image/jpeg", "post", size_bytes=11 * 1024 * 1024
+        )
+
+
+def test_size_cap_allows_video_up_to_100mb(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(storage_service, "bucket", _FakeBucket())
+
+    result = storage_service.generate_upload_url(
+        "uid-1", "video/mp4", "post", size_bytes=99 * 1024 * 1024
+    )
+    assert result.object_path.endswith(".mp4")
+
+    with pytest.raises(storage_service.FileTooLarge):
+        storage_service.generate_upload_url(
+            "uid-1", "video/mp4", "post", size_bytes=101 * 1024 * 1024
+        )
+
+
 def test_expires_at_is_15_minutes_from_now(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -201,7 +243,9 @@ def test_post_sign_returns_200_with_upload_url_and_object_path(
 ) -> None:
     _override_claims({"uid": "uid-1", "admin": False})
 
-    def fake_generate(uid: str, content_type: str, purpose: str) -> UploadUrlResponse:
+    def fake_generate(
+        uid: str, content_type: str, purpose: str, size_bytes: int | None = None
+    ) -> UploadUrlResponse:
         return _sample_response()
 
     monkeypatch.setattr(storage_service, "generate_upload_url", fake_generate)
@@ -224,7 +268,9 @@ def test_post_sign_invalid_content_type_returns_400(
 ) -> None:
     _override_claims({"uid": "uid-1", "admin": False})
 
-    def fake_generate(uid: str, content_type: str, purpose: str) -> UploadUrlResponse:
+    def fake_generate(
+        uid: str, content_type: str, purpose: str, size_bytes: int | None = None
+    ) -> UploadUrlResponse:
         raise storage_service.InvalidContentType(content_type)
 
     monkeypatch.setattr(storage_service, "generate_upload_url", fake_generate)
@@ -236,5 +282,6 @@ def test_post_sign_invalid_content_type_returns_400(
 
     assert response.status_code == 400
     body = response.json()
-    assert body["error"]["code"] == "INVALID_INPUT"
+    # API-03: contract-specified error code (docs/API_CONTRACTS.md §8).
+    assert body["error"]["code"] == "INVALID_CONTENT_TYPE"
     assert body["error"]["field"] == "content_type"

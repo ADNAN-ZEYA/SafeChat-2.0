@@ -99,6 +99,26 @@ async def mark_message_read(
     return Response(status_code=204)
 
 
+@router.post("/{chat_id}/read", status_code=204)
+async def mark_chat_read(
+    chat_id: str,
+    claims: dict[str, Any] = Depends(get_current_user_claims),
+) -> Response:
+    """Mark all messages in the chat as read for the requesting user.
+
+    Resets the caller's unread counter (chat-list badge) and stamps read
+    receipts on the other participant's delivered messages.
+    """
+    try:
+        await messages_service.mark_chat_read(chat_id=chat_id, reader_uid=claims["uid"])
+    except messages_service.ChatNotFound as exc:
+        raise _chat_not_found(chat_id) from exc
+    except messages_service.NotAuthorized as exc:
+        raise _forbidden() from exc
+
+    return Response(status_code=204)
+
+
 @router.patch("/{chat_id}/encryption-mode")
 async def update_encryption_mode(
     chat_id: str,
@@ -152,8 +172,22 @@ async def send_message(
         raise _chat_not_found(chat_id) from exc
     except messages_service.NotAuthorized as exc:
         raise _forbidden() from exc
+    except messages_service.MessagingNotAllowed as exc:
+        raise HTTPException(
+            status_code=403,
+            detail={"code": "FORBIDDEN", "message": str(exc)},
+        ) from exc
     except messages_service.MessageBlocked as exc:
         return _moderation_flagged_response(exc.matches, exc.reason)
+    except messages_service.InvalidCiphertext as exc:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "code": "INVALID_INPUT",
+                "message": str(exc),
+                "field": "text",
+            },
+        ) from exc
 
     status_code = 202 if message.status == "pending_review" else 201
     return JSONResponse(
@@ -226,6 +260,11 @@ async def get_or_create_chat(
                 "code": "INVALID_INPUT",
                 "message": "You cannot start a chat with yourself.",
             },
+        ) from exc
+    except messages_service.MessagingNotAllowed as exc:
+        raise HTTPException(
+            status_code=403,
+            detail={"code": "FORBIDDEN", "message": str(exc)},
         ) from exc
 
     return JSONResponse(

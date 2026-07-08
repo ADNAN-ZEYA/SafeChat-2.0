@@ -55,7 +55,10 @@ Accept: application/json
 | 404 | `NOT_FOUND` | Resource doesn't exist |
 | 409 | `CONFLICT` | Resource state conflict |
 | 409 | `USERNAME_TAKEN` | Username already taken |
-| 422 | `MODERATION_BLOCKED` | Content blocked by moderation |
+| 400 | `INVALID_CONTENT_TYPE` | Upload MIME type not allowed |
+| 400 | `FILE_TOO_LARGE` | Upload exceeds the size cap for its media type |
+| 422 | `MODERATION_FLAGGED` | Content flagged (posts/comments/messages/stories) — carries `matches[]`; the client may resubmit with `submit_for_review: true` |
+| 422 | `MODERATION_BLOCKED` | Profile field (display_name/bio/username) blocked by moderation |
 | 429 | `RATE_LIMITED` | Too many requests |
 | 500 | `INTERNAL_ERROR` | Server error |
 | 503 | `SERVICE_UNAVAILABLE` | Dependency down |
@@ -87,9 +90,10 @@ All timestamps are ISO 8601 UTC: `2026-11-15T14:30:00.000Z`
 
 ## 2. Authentication
 
-### POST `/api/v1/auth/me`
+### GET `/api/v1/auth/me`
 
-Verify current token and return user info.
+Verify current token and return user info. (Implemented as `GET` — no request
+body is required.)
 
 **Request:** No body, just bearer token.
 
@@ -359,7 +363,18 @@ Get message history (paginated, newest first).
 
 ### POST `/api/v1/chats/{chatId}/read`
 
-Mark all messages in chat as read.
+Mark all messages in the chat as read for the caller: resets their
+`unread_counts` entry (chat-list badge) and stamps `read_at` on the other
+participant's delivered messages. **Response 204.**
+
+### PATCH `/api/v1/chats/{chatId}/messages/{messageId}/read`
+
+Mark a single message as read. **Response 204.**
+
+### PATCH `/api/v1/chats/{chatId}/encryption-mode`
+
+Toggle SafeChat Mode (`pending` ↔ `trusted`). Allowed only between mutual
+followers; `403 FORBIDDEN` otherwise. See DATABASE_SCHEMA.md §10.
 
 ---
 
@@ -367,18 +382,21 @@ Mark all messages in chat as read.
 
 ### POST `/api/v1/stories`
 
-Post a story (auto-expires after 24 hours).
+Post a story (auto-expires after 24 hours; expired docs are purged hourly by
+the `cleanupExpiredStories` Cloud Function).
 
 **Request:**
 ```json
 {
-  "media_url": "https://storage.../story.jpg",
-  "media_type": "image",
-  "caption": "Optional"
+  "image_url": "https://storage.../story.jpg",
+  "text": "Optional caption",
+  "submit_for_review": false
 }
 ```
 
-**Response 201:** Story object with `expires_at` field.
+**Responses:** `201` (approved), `202` (flagged + `submit_for_review: true` →
+`pending_review`), or `422 MODERATION_FLAGGED` (flagged, not submitted) — the
+same human-verification contract as posts/comments/messages (§14b).
 
 ### GET `/api/v1/stories/feed`
 
@@ -401,9 +419,12 @@ Request a signed Firebase Storage URL for upload.
 {
   "content_type": "image/jpeg",
   "size_bytes": 2048576,
-  "purpose": "post" | "story" | "profile" | "message"
+  "purpose": "post" | "story" | "avatar" | "background" | "message"
 }
 ```
+
+`size_bytes` is optional; when provided it is validated against the caps below.
+`purpose` values are `post`, `story`, `avatar`, `background`, `message`.
 
 **Response 200:**
 ```json
@@ -452,20 +473,23 @@ Get notifications for current user.
 
 ### POST `/api/v1/notifications/read`
 
-Mark notifications as read.
+Mark a specific set of notifications as read.
 
 **Request:**
 ```json
 { "ids": ["notif_1", "notif_2"] }
 ```
 
-### POST `/api/v1/notifications/fcm-token`
+**Response 204.** Related endpoints: `PUT /notifications/{id}/read` (single),
+`PUT /notifications/read-all` (all unread).
 
-Register FCM token for push notifications.
+### POST `/api/v1/users/device-token`
+
+Register an FCM token for push notifications. Stored at `fcm_tokens/{uid}`.
 
 **Request:**
 ```json
-{ "token": "fcm_token_string", "device_type": "android" | "web" }
+{ "token": "fcm_token_string" }
 ```
 
 ---
@@ -494,13 +518,20 @@ Report content.
 
 Admin endpoints require `admin: true` custom claim on user's Firebase Auth token.
 
-### GET `/api/v1/admin/reports`
+> **Implementation status.** The endpoints below marked _(implemented)_ exist
+> today. Report listing/resolution live under the `/reports` prefix (not
+> `/admin/reports`). Keyword CRUD and direct post approve/block are **planned,
+> not implemented** — the lexicon is code-defined (`moderation/lexicon.py`)
+> and pending content is actioned through the moderation queue (§14b).
 
-List pending reports.
+### GET `/api/v1/reports` — _(implemented)_
 
-**Query:** `status=pending`, `cursor`, `limit`
+List reports. Admin only. **Query:** `status` (`pending`|`reviewed`|`dismissed`), `limit`.
 
-### POST `/api/v1/admin/reports/{reportId}/resolve`
+### POST `/api/v1/reports/{reportId}/resolve` — _(implemented)_
+
+Record an admin's decision on a report (does not itself block/suspend — those
+are separate moderation actions).
 
 **Request:**
 ```json
@@ -510,34 +541,14 @@ List pending reports.
 }
 ```
 
-### GET `/api/v1/admin/posts/pending`
+Sets status to `dismissed` (for `dismiss`) or `reviewed` (otherwise).
 
-Posts/stories in `pending_review` status.
+### Planned (not yet implemented)
 
-### POST `/api/v1/admin/posts/{postId}/approve`
+- `GET /admin/posts/pending`, `POST /admin/posts/{postId}/approve|block`
+- `GET|POST /admin/moderation/keywords`, `DELETE /admin/moderation/keywords/{id}`
 
-### POST `/api/v1/admin/posts/{postId}/block`
-
-### GET `/api/v1/admin/moderation/keywords`
-
-List dynamic keyword filter entries.
-
-### POST `/api/v1/admin/moderation/keywords`
-
-Add a new keyword.
-
-**Request:**
-```json
-{
-  "category": "english_slurs" | "hindi_slurs" | "hinglish_slurs" | "threats",
-  "value": "...",
-  "notes": "..."
-}
-```
-
-### DELETE `/api/v1/admin/moderation/keywords/{keywordId}`
-
-### POST `/api/v1/admin/moderation/test`
+### POST `/api/v1/admin/moderation/test` — _(implemented)_
 
 Run arbitrary text through the full moderation cascade. Useful for testing
 keyword changes, tuning thresholds, and debugging false positives. Requires
@@ -589,15 +600,22 @@ cascade short-circuits on first block).
   "data": {
     "status": "ok",
     "version": "0.1.0",
+    "environment": "production",
     "dependencies": {
       "firestore": "ok",
-      "openai": "ok",
-      "gemini": "ok",
-      "vision": "ok"
+      "firebase_auth": "ok",
+      "openai": "configured",
+      "vision": "configured"
     }
   }
 }
 ```
+
+`firestore` and `firebase_auth` are live probes (`ok` | `error`) and drive the
+overall status (503 if either fails). `openai` and `vision` report
+**configuration** only (`configured` | `not_configured` | `disabled`) — they
+are not live-probed to avoid per-check cost, and both moderation layers fail
+open by design. There is no Gemini layer (planned, not implemented).
 
 ---
 
@@ -679,4 +697,4 @@ When `v2` is introduced, `v1` is supported for minimum 6 months with deprecation
 
 ---
 
-*Last updated: November 2026*
+*Last updated: July 2026 (Phase 2 hardening — reconciled with implementation).*

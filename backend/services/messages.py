@@ -1,4 +1,4 @@
-# backend/services/messages.py
+﻿# backend/services/messages.py
 """Direct-messaging service layer.
 
 Chats live at /chats/{chat_id}.
@@ -12,6 +12,8 @@ which side initiates.
 from __future__ import annotations
 
 import asyncio
+import base64
+import binascii
 import logging
 import uuid
 from datetime import datetime
@@ -21,9 +23,10 @@ from google.cloud import firestore
 from google.cloud.firestore import DocumentReference, FieldFilter
 
 from core.firebase import db
+from core.tasks import fire_and_forget
 from models.message import Chat, Message
 from models.moderation import Match
-from moderation.engine import moderate_text
+from moderation.engine import moderate_image, moderate_text
 from services import follows as follows_service
 from services import moderation_queue
 from services.notifications import send_message_notification
@@ -34,8 +37,18 @@ CHATS_COLLECTION = "chats"
 MESSAGES_SUBCOLLECTION = "messages"
 USERS_COLLECTION = "users"
 ENCRYPTION_AUDIT_COLLECTION = "encryption_mode_audit_logs"
+# Composite-ID collections owned by blocks.py / follows.py. Read here through
+# this module's `db` (rather than through those services) so the relationship
+# guard hits the same Firestore client the tests fake out.
+BLOCKS_COLLECTION = "blocks"
+FOLLOWS_COLLECTION = "follows"
 
 _ENCRYPTED_PLACEHOLDER = "🔒 Encrypted message"
+
+# Minimum decoded size of a valid E2E payload: 12-byte AES-GCM nonce +
+# 16-byte MAC tag (an empty plaintext still carries both). See
+# frontend/lib/features/chat/data/encryption_service.dart.
+_MIN_CIPHERTEXT_BYTES = 28
 
 
 class CannotMessageSelf(Exception):
@@ -44,6 +57,14 @@ class CannotMessageSelf(Exception):
 
 class NotMutualFollow(Exception):
     """Raised when a SafeChat Mode change is attempted between non-mutual followers."""
+
+
+class MessagingNotAllowed(Exception):
+    """Raised when a block (either direction) or the recipient's DM privacy
+    setting (`allow_messages_from`) forbids messaging between the two users.
+    The message is deliberately generic — it must not reveal to a blocked
+    user that they were blocked.
+    """
 
 
 class MessageBlocked(Exception):
@@ -65,6 +86,14 @@ class MessageBlocked(Exception):
         super().__init__(reason or "Message blocked by content moderation.")
 
 
+class InvalidCiphertext(Exception):
+    """Raised when a message sent to a "trusted" (E2E) chat is not structurally
+    valid ciphertext. Guards the `encrypted: true` invariant: a client-side
+    race (or a hostile client) must never get plaintext stored as encrypted —
+    and must never skip moderation for human-readable text.
+    """
+
+
 class NotAuthorized(Exception):
     """Raised when the requesting user is not a participant in the chat."""
 
@@ -75,6 +104,107 @@ class ChatNotFound(Exception):
 
 class MessageNotFound(Exception):
     """Raised when the requested message document does not exist."""
+
+
+def _validate_ciphertext(text: str) -> None:
+    """Require `text` to look like the client's E2E payload (base64 of
+    nonce + ciphertext + MAC). Raises InvalidCiphertext otherwise.
+    """
+    try:
+        raw = base64.b64decode(text, validate=True)
+    except (binascii.Error, ValueError) as exc:
+        raise InvalidCiphertext(
+            "This chat is end-to-end encrypted; the message body must be ciphertext."
+        ) from exc
+    if len(raw) < _MIN_CIPHERTEXT_BYTES:
+        raise InvalidCiphertext(
+            "This chat is end-to-end encrypted; the message body must be ciphertext."
+        )
+
+
+_CANNOT_MESSAGE = "You can't message this user."
+
+
+async def _ensure_can_message(sender_uid: str, recipient_uid: str) -> None:
+    """Relationship guard for DMs (SEC-05).
+
+    Refuses when either user has blocked the other, or when the recipient's
+    `allow_messages_from` setting excludes the sender:
+      - "everyone" (default, incl. missing profile): allowed
+      - "followers": sender must be a follower of the recipient
+      - "none":      nobody may message them
+
+    Raises:
+        MessagingNotAllowed: with a generic message for every refusal reason.
+    """
+
+    def _check() -> None:
+        # Blocks are composite-ID docs: {blocker_uid}_{blocked_uid}.
+        sender_blocked_recipient = (
+            db.collection(BLOCKS_COLLECTION)
+            .document(f"{sender_uid}_{recipient_uid}")
+            .get()
+        )
+        recipient_blocked_sender = (
+            db.collection(BLOCKS_COLLECTION)
+            .document(f"{recipient_uid}_{sender_uid}")
+            .get()
+        )
+        if sender_blocked_recipient.exists or recipient_blocked_sender.exists:
+            raise MessagingNotAllowed(_CANNOT_MESSAGE)
+
+        recipient_snap = db.collection(USERS_COLLECTION).document(recipient_uid).get()
+        allow = "everyone"
+        if recipient_snap.exists:
+            allow = (recipient_snap.to_dict() or {}).get("allow_messages_from") or "everyone"
+
+        if allow == "none":
+            raise MessagingNotAllowed(_CANNOT_MESSAGE)
+        if allow == "followers":
+            # Follows are composite-ID docs: {follower_uid}_{followee_uid}.
+            follow_snap = (
+                db.collection(FOLLOWS_COLLECTION)
+                .document(f"{sender_uid}_{recipient_uid}")
+                .get()
+            )
+            if not follow_snap.exists:
+                raise MessagingNotAllowed(_CANNOT_MESSAGE)
+
+    await asyncio.to_thread(_check)
+
+
+async def _moderate_message_image(chat_id: str, message_id: str, image_url: str) -> None:
+    """Background task (SEC-08): Vision SafeSearch on a DM image.
+
+    Mirrors services/posts.py::_moderate_post_image — runs after the message
+    is stored, flips it to "rejected" if the image trips SafeSearch. Only
+    scheduled on the moderated ("pending" encryption_mode) path; trusted
+    chats intentionally bypass all moderation per the SafeChat Mode spec.
+
+    Known accepted edge: a delivered message rejected here does not decrement
+    the recipient's unread counter (badge may briefly overcount by one).
+    """
+    try:
+        result = await moderate_image(image_url)
+        if result.blocked:
+            await asyncio.to_thread(
+                _message_ref(chat_id, message_id).update,
+                {
+                    "status": "rejected",
+                    "rejection_reason": "Image failed automated safety checks.",
+                    "updated_at": firestore.SERVER_TIMESTAMP,
+                },
+            )
+            logger.info(
+                "Message %s in chat %s rejected by image moderation (category=%s)",
+                message_id,
+                chat_id,
+                result.category,
+            )
+    except Exception as exc:  # never crash the event loop from a bg task
+        logger.warning(
+            "Image moderation background task failed for message %s: %s", message_id, exc
+        )
 
 
 def _chat_ref(chat_id: str) -> DocumentReference:
@@ -98,9 +228,14 @@ async def get_or_create_chat(uid_a: str, uid_b: str) -> Chat:
 
     Raises:
         CannotMessageSelf: if uid_a == uid_b.
+        MessagingNotAllowed: if a block or the recipient's DM privacy setting
+            forbids messaging (SEC-05) — applies to existing chats too, since
+            "block" means no interaction at all.
     """
     if uid_a == uid_b:
         raise CannotMessageSelf("You cannot start a chat with yourself.")
+
+    await _ensure_can_message(uid_a, uid_b)
 
     chat_id = f"{min(uid_a, uid_b)}_{max(uid_a, uid_b)}"
 
@@ -114,6 +249,7 @@ async def get_or_create_chat(uid_a: str, uid_b: str) -> Chat:
         "participants": sorted([uid_a, uid_b]),
         "last_message_text": None,
         "last_message_at": None,
+        "unread_counts": {uid_a: 0, uid_b: 0},
         "encryption_mode": "pending",
         "created_at": now,
         "updated_at": now,
@@ -254,6 +390,8 @@ async def send_message(
     Raises:
         ChatNotFound: if the chat document does not exist.
         NotAuthorized: if sender_uid is not a participant in the chat.
+        MessagingNotAllowed: if a block or the recipient's DM privacy setting
+            forbids messaging (SEC-05).
         MessageBlocked: flagged text when the sender has not opted into review.
     """
     chat_snap = await asyncio.to_thread(_chat_ref(chat_id).get)
@@ -264,6 +402,12 @@ async def send_message(
     if sender_uid not in chat_data.get("participants", []):
         raise NotAuthorized(sender_uid)
 
+    recipient_for_guard = next(
+        (uid for uid in chat_data.get("participants", []) if uid != sender_uid), None
+    )
+    if recipient_for_guard is not None:
+        await _ensure_can_message(sender_uid, recipient_for_guard)
+
     is_trusted = chat_data.get("encryption_mode", "pending") == "trusted"
 
     message_id = str(uuid.uuid4())
@@ -273,6 +417,12 @@ async def send_message(
         # SafeChat Mode is OFF for this chat: `text` is already client-side E2E
         # ciphertext. The moderation pipeline never sees plaintext here — skip
         # it entirely, per the SafeChat Mode spec.
+        #
+        # SM-01 guard: reject anything that is not structurally ciphertext, so
+        # a client that raced the mode toggle (or a hostile client) can never
+        # store readable plaintext stamped `encrypted: true` with moderation
+        # skipped.
+        _validate_ciphertext(text)
         message_data: dict[str, Any] = {
             "id": message_id,
             "chat_id": chat_id,
@@ -288,32 +438,31 @@ async def send_message(
         }
         preview_text = _ENCRYPTED_PLACEHOLDER
         notification_text = _ENCRYPTED_PLACEHOLDER
+        recipient_uid = recipient_for_guard
 
         def _write() -> None:
             batch = db.batch()
             batch.set(_message_ref(chat_id, message_id), message_data)
-            batch.update(
-                _chat_ref(chat_id),
-                {
-                    "last_message_text": preview_text,
-                    "last_message_at": firestore.SERVER_TIMESTAMP,
-                    "updated_at": firestore.SERVER_TIMESTAMP,
-                },
-            )
+            chat_updates: dict[str, Any] = {
+                "last_message_text": preview_text,
+                "last_message_at": firestore.SERVER_TIMESTAMP,
+                "updated_at": firestore.SERVER_TIMESTAMP,
+            }
+            if recipient_uid:
+                chat_updates[f"unread_counts.{recipient_uid}"] = firestore.Increment(1)
+            batch.update(_chat_ref(chat_id), chat_updates)
             batch.commit()
 
         await asyncio.to_thread(_write)
         snap = await asyncio.to_thread(_message_ref(chat_id, message_id).get)
         message = Message.model_validate(snap.to_dict())
 
-        participants = chat_data.get("participants", [])
-        recipient_uid = next((uid for uid in participants if uid != sender_uid), None)
         if recipient_uid:
             sender_snap = await asyncio.to_thread(
                 db.collection(USERS_COLLECTION).document(sender_uid).get
             )
             display_name: str = (sender_snap.to_dict() or {}).get("display_name") or "Someone"
-            asyncio.create_task(
+            fire_and_forget(
                 send_message_notification(
                     recipient_uid, display_name, notification_text, chat_id
                 )
@@ -377,16 +526,17 @@ async def send_message(
     def _write() -> None:
         batch = db.batch()
         batch.set(_message_ref(chat_id, message_id), message_data)
-        # Only delivered (approved) messages update the chat preview.
+        # Only delivered (approved) messages update the chat preview and the
+        # recipient's unread counter.
         if initial_status == "approved":
-            batch.update(
-                _chat_ref(chat_id),
-                {
-                    "last_message_text": text,
-                    "last_message_at": firestore.SERVER_TIMESTAMP,
-                    "updated_at": firestore.SERVER_TIMESTAMP,
-                },
-            )
+            chat_updates: dict[str, Any] = {
+                "last_message_text": text,
+                "last_message_at": firestore.SERVER_TIMESTAMP,
+                "updated_at": firestore.SERVER_TIMESTAMP,
+            }
+            if recipient_for_guard:
+                chat_updates[f"unread_counts.{recipient_for_guard}"] = firestore.Increment(1)
+            batch.update(_chat_ref(chat_id), chat_updates)
         if queue_item is not None:
             qid, qpayload = queue_item
             batch.set(db.collection(moderation_queue.QUEUE_COLLECTION).document(qid), qpayload)
@@ -398,16 +548,22 @@ async def send_message(
     snap = await asyncio.to_thread(_message_ref(chat_id, message_id).get)
     message = Message.model_validate(snap.to_dict())
 
+    # SEC-08: screen DM images with Vision SafeSearch, exactly like posts.
+    if image_url:
+        fire_and_forget(
+            _moderate_message_image(chat_id, message_id, image_url),
+            name=f"moderate-message-image:{message_id}",
+        )
+
     # Push to the recipient only when the message was actually delivered.
     if initial_status == "approved":
-        participants = chat_data.get("participants", [])
-        recipient_uid = next((uid for uid in participants if uid != sender_uid), None)
+        recipient_uid = recipient_for_guard
         if recipient_uid:
             sender_snap = await asyncio.to_thread(
                 db.collection(USERS_COLLECTION).document(sender_uid).get
             )
             display_name: str = (sender_snap.to_dict() or {}).get("display_name") or "Someone"
-            asyncio.create_task(
+            fire_and_forget(
                 send_message_notification(recipient_uid, display_name, text, chat_id)
             )
 
@@ -446,6 +602,14 @@ async def get_messages(
         except ValueError:
             before_dt = None
 
+    # Visibility is a disjunction — status == "approved" OR sender == me —
+    # which Firestore can't express as one indexed filter, so we filter in
+    # Python. CQ-07: over-fetch so that dropping the peer's hidden
+    # (pending/rejected) messages doesn't return a short page and strand
+    # older approved messages behind a broken has_more heuristic. Capped so a
+    # chat full of one side's hidden messages can't force an unbounded read.
+    over_fetch = min(cap * 3, 150)
+
     def _query() -> list[Message]:
         q = (
             db.collection(CHATS_COLLECTION)
@@ -455,7 +619,7 @@ async def get_messages(
         )
         if before_dt is not None:
             q = q.where(filter=FieldFilter("created_at", "<", before_dt))
-        q = q.limit(cap)
+        q = q.limit(over_fetch)
         # The recipient only sees approved messages; the sender additionally
         # sees their own pending_review / rejected messages (with status shown).
         results: list[Message] = []
@@ -466,6 +630,8 @@ async def get_messages(
             message = Message.model_validate(data)
             if message.status == "approved" or message.sender_uid == requesting_uid:
                 results.append(message)
+                if len(results) >= cap:
+                    break
         return results
 
     return await asyncio.to_thread(_query)
@@ -487,6 +653,61 @@ async def get_chats(uid: str) -> list[Chat]:
         return [Chat.model_validate(snap.to_dict()) for snap in q.stream()]
 
     return await asyncio.to_thread(_query)
+
+
+_MARK_READ_BATCH_CAP = 500  # Firestore batch limit safety
+
+
+async def mark_chat_read(chat_id: str, reader_uid: str) -> None:
+    """Mark the whole chat read for reader_uid (POST /chats/{id}/read).
+
+    Resets the reader's unread counter and stamps read_at on every delivered
+    message from the other participant that hasn't been read yet.
+
+    Raises:
+        ChatNotFound: if the chat document does not exist.
+        NotAuthorized: if reader_uid is not a participant.
+    """
+    chat_snap = await asyncio.to_thread(_chat_ref(chat_id).get)
+    if not chat_snap.exists:
+        raise ChatNotFound(chat_id)
+
+    chat_data = chat_snap.to_dict() or {}
+    if reader_uid not in chat_data.get("participants", []):
+        raise NotAuthorized(reader_uid)
+
+    def _write() -> None:
+        batch = db.batch()
+        batch.update(_chat_ref(chat_id), {f"unread_counts.{reader_uid}": 0})
+        count = 1
+
+        messages = (
+            db.collection(CHATS_COLLECTION)
+            .document(chat_id)
+            .collection(MESSAGES_SUBCOLLECTION)
+            .stream()
+        )
+        for msg_snap in messages:
+            msg = msg_snap.to_dict() or {}
+            if (
+                msg.get("sender_uid") != reader_uid
+                and msg.get("read_at") is None
+                and msg.get("status", "approved") == "approved"
+            ):
+                batch.update(
+                    _message_ref(chat_id, str(msg.get("id", msg_snap.id))),
+                    {"read_at": firestore.SERVER_TIMESTAMP},
+                )
+                count += 1
+                if count >= _MARK_READ_BATCH_CAP:
+                    batch.commit()
+                    batch = db.batch()
+                    count = 0
+
+        if count > 0:
+            batch.commit()
+
+    await asyncio.to_thread(_write)
 
 
 async def mark_read(
@@ -539,6 +760,10 @@ async def set_message_status(
     text = str(data.get("text", ""))
     sender_uid = str(data.get("sender_uid", ""))
 
+    chat_snap = await asyncio.to_thread(_chat_ref(chat_id).get)
+    participants = (chat_snap.to_dict() or {}).get("participants", [])
+    recipient_uid = next((uid for uid in participants if uid != sender_uid), None)
+
     updates: dict[str, Any] = {"status": status, "updated_at": firestore.SERVER_TIMESTAMP}
     if status == "rejected":
         updates["rejection_reason"] = reason
@@ -547,28 +772,26 @@ async def set_message_status(
         batch = db.batch()
         batch.update(_message_ref(chat_id, message_id), updates)
         if status == "approved":
-            batch.update(
-                _chat_ref(chat_id),
-                {
-                    "last_message_text": text,
-                    "last_message_at": firestore.SERVER_TIMESTAMP,
-                    "updated_at": firestore.SERVER_TIMESTAMP,
-                },
-            )
+            chat_updates: dict[str, Any] = {
+                "last_message_text": text,
+                "last_message_at": firestore.SERVER_TIMESTAMP,
+                "updated_at": firestore.SERVER_TIMESTAMP,
+            }
+            # Admin approval is the delivery moment for a pending message.
+            if recipient_uid:
+                chat_updates[f"unread_counts.{recipient_uid}"] = firestore.Increment(1)
+            batch.update(_chat_ref(chat_id), chat_updates)
         batch.commit()
 
     await asyncio.to_thread(_write)
 
     if status == "approved":
-        chat_snap = await asyncio.to_thread(_chat_ref(chat_id).get)
-        participants = (chat_snap.to_dict() or {}).get("participants", [])
-        recipient_uid = next((uid for uid in participants if uid != sender_uid), None)
         if recipient_uid:
             sender_snap = await asyncio.to_thread(
                 db.collection(USERS_COLLECTION).document(sender_uid).get
             )
             display_name = (sender_snap.to_dict() or {}).get("display_name") or "Someone"
-            asyncio.create_task(
+            fire_and_forget(
                 send_message_notification(recipient_uid, display_name, text, chat_id)
             )
 

@@ -9,7 +9,7 @@ from typing import Literal
 from pydantic import BaseModel, Field
 
 QueueStatus = Literal["pending_review", "approved", "rejected"]
-ContentType = Literal["post", "comment", "message"]
+ContentType = Literal["post", "comment", "message", "story"]
 
 
 class Match(BaseModel):

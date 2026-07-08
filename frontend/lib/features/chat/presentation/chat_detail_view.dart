@@ -34,7 +34,19 @@ class _ChatDetailViewState extends ConsumerState<ChatDetailView> {
   @override
   void initState() {
     super.initState();
-    _loadSharedKey();
+    _markChatRead();
+  }
+
+  /// Resets this user's unread badge and stamps read receipts. Fire-and-forget:
+  /// a failure only means the badge clears on the next successful open.
+  Future<void> _markChatRead() async {
+    try {
+      await ref
+          .read(dioProvider)
+          .post('/api/v1/chats/${widget.chatId}/read');
+    } catch (_) {
+      // Non-fatal — the badge will reset on a later open.
+    }
   }
 
   @override
@@ -43,40 +55,33 @@ class _ChatDetailViewState extends ConsumerState<ChatDetailView> {
     super.dispose();
   }
 
-  // Static-static X25519 ECDH is symmetric, so the same derived key encrypts
-  // this device's outgoing messages and decrypts either side's messages in
-  // this 1:1 chat — see EncryptionService for the full explanation.
-  Future<void> _loadSharedKey() async {
-    final uid = FirebaseAuth.instance.currentUser?.uid;
-    if (uid == null) return;
-
-    try {
-      final otherDoc = await FirebaseFirestore.instance
-          .collection('users')
-          .doc(widget.otherUid)
-          .get();
-      final otherPublicKeyB64 = otherDoc.data()?['public_key'] as String?;
-      if (otherPublicKeyB64 == null) return;
-
-      final key = await ref
-          .read(encryptionServiceProvider)
-          .deriveSharedKey(myUid: uid, otherPublicKeyB64: otherPublicKeyB64);
-      if (!mounted) return;
-      setState(() => _sharedKey = key);
-    } catch (_) {
-      // Keys not ready yet (e.g. other user hasn't logged in since this
-      // shipped) — SafeChat Mode simply stays unavailable for this chat.
-    }
-  }
-
   Future<void> _sendMessage() async {
     final text = _messageController.text.trim();
     if (text.isEmpty) return;
 
     final messenger = ScaffoldMessenger.of(context);
     final dio = ref.read(dioProvider);
-    final mode =
-        ref.read(chatEncryptionModeProvider(widget.chatId)).value ?? 'pending';
+
+    // SM-01: await the authoritative mode instead of reading the stream's
+    // possibly-not-yet-emitted value. Defaulting to 'pending' on a fresh
+    // screen could send PLAINTEXT into a trusted chat (which the backend
+    // stamps `encrypted: true` and skips moderation for). `.future` resolves
+    // immediately once the stream has emitted; otherwise it waits for the
+    // first snapshot. If the mode cannot be determined, refuse to send.
+    final String mode;
+    try {
+      mode = await ref.read(chatEncryptionModeProvider(widget.chatId).future);
+    } catch (_) {
+      messenger.showSnackBar(
+        const SnackBar(
+          content: Text(
+            'Could not verify this chat\'s SafeChat Mode — message not sent. '
+            'Check your connection and try again.',
+          ),
+        ),
+      );
+      return;
+    }
 
     if (mode == 'trusted') {
       final sharedKey = _sharedKey;
@@ -218,6 +223,17 @@ class _ChatDetailViewState extends ConsumerState<ChatDetailView> {
 
     if (uid == null) {
       return const Scaffold(body: Center(child: Text('Not logged in')));
+    }
+
+    // SM-02: derive the shared key reactively. Watching the provider means a
+    // peer who publishes/rotates their public key mid-session triggers a
+    // rebuild and re-derivation here, so SafeChat Mode becomes available
+    // without reopening the screen (the old one-shot initState fetch did not).
+    final derivedKey = ref
+        .watch(chatSharedKeyProvider((myUid: uid, otherUid: widget.otherUid)))
+        .value;
+    if (derivedKey != null) {
+      _sharedKey = derivedKey;
     }
 
     final friendsAsync = ref.watch(friendsProvider(uid));

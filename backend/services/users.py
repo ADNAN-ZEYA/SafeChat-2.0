@@ -16,7 +16,7 @@ from google.cloud import firestore
 from google.cloud.firestore import DocumentReference, FieldFilter, Transaction
 
 from core.firebase import db
-from models.user import UserProfile, UserSearchResult
+from models.user import USERNAME_PATTERN, UserProfile, UserSearchResult
 
 
 class UsernameTaken(Exception):
@@ -196,6 +196,15 @@ async def update_profile(uid: str, fields: dict[str, Any]) -> UserProfile:
 
 async def change_username(uid: str, new_username: str) -> None:
     """Safely change a user's username using a transaction."""
+    # Defense-in-depth (CQ-05): enforce the charset rule even if a caller
+    # bypasses the request-model validation.
+    new_username = new_username.strip().lower()
+    if not USERNAME_PATTERN.match(new_username):
+        raise ValueError(
+            "Username must be 3-30 characters: lowercase letters, "
+            "digits, and underscores only."
+        )
+
     user_ref = _user_ref(uid)
     new_username_ref = _username_ref(new_username)
     
@@ -285,18 +294,27 @@ async def search_users(query: str, limit: int) -> list[dict[str, Any]]:
 
 
 async def register_device_token(uid: str, token: str) -> None:
-    """Store an FCM device token on the user doc."""
-    user_ref = _user_ref(uid)
-    payload = {"fcm_tokens": firestore.ArrayUnion([token])}
-    
-    def _update() -> None:
-        try:
-            user_ref.update(payload)
-        except NotFound:
-            # If they don't exist yet, we can't store the token
-            pass
+    """Store the user's FCM device token at /fcm_tokens/{uid}.
 
-    await asyncio.to_thread(_update)
+    SEC-06: this MUST be the same location the push sender reads
+    (services/notifications.py::send_message_notification reads
+    fcm_tokens/{recipient_uid}). The previous implementation appended to a
+    `users/{uid}.fcm_tokens` array that nothing ever read, so push
+    notifications silently never fired.
+
+    Single token per user, last write wins — the most recently registered
+    device receives pushes.
+    """
+    payload = {
+        "uid": uid,
+        "token": token,
+        "updated_at": firestore.SERVER_TIMESTAMP,
+    }
+
+    def _write() -> None:
+        db.collection("fcm_tokens").document(uid).set(payload, merge=True)
+
+    await asyncio.to_thread(_write)
 
 
 async def get_blocked_users_profiles(uid: str) -> list[dict[str, Any]]:

@@ -1,0 +1,20 @@
+rules_version = '2';
+
+// SafeChat Storage rules (SEC-09).
+//
+// The bucket is PRIVATE and every media flow goes through the backend:
+//   - Uploads:  POST /api/v1/uploads/sign -> signed PUT URL (bypasses rules)
+//   - Reads:    backend re-signs short-lived GET URLs at serve time
+//     (services/storage.py::sign_media_url) — also bypasses rules
+//
+// The Flutter client never uses the Firebase Storage SDK (verified: media
+// loads via CachedNetworkImage over https signed URLs only), so client-SDK
+// access is denied entirely. If a future feature needs direct SDK access,
+// grant the narrowest possible path here instead of relaxing this default.
+service firebase.storage {
+  match /b/{bucket}/o {
+    match /{allPaths=**} {
+      allow read, write: if false;
+    }
+  }
+}

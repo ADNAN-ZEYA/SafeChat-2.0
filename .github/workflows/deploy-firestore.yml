@@ -54,7 +54,7 @@ jobs:
           # Build, so no --gcs-log-dir is needed here.
           firebase deploy \
             --only firestore:rules,firestore:indexes \
-            --project safechat-prod-66143 \
+            --project ${{ secrets.GCP_PROJECT_ID }} \
             --non-interactive
 
       - name: 🔍 Smoke test (deployed rules match local)
@@ -62,7 +62,7 @@ jobs:
           set -uo pipefail
           ACCESS_TOKEN=$(gcloud auth print-access-token)
           RELEASE=$(curl -s -H "Authorization: Bearer $ACCESS_TOKEN" \
-            "https://firebaserules.googleapis.com/v1/projects/safechat-prod-66143/releases/cloud.firestore")
+            "https://firebaserules.googleapis.com/v1/projects/${{ secrets.GCP_PROJECT_ID }}/releases/cloud.firestore")
           RULESET_NAME=$(echo "$RELEASE" | jq -r '.rulesetName')
           if [ -z "$RULESET_NAME" ] || [ "$RULESET_NAME" = "null" ]; then
             echo "::error::Could not determine the active Firestore ruleset"

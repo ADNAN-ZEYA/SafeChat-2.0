@@ -6,7 +6,14 @@ Phased build plan from current state to production launch and beyond.
 
 ## Current State
 
-Phase 0 — Foundation. GCP project created, Firebase services enabled, credentials secured, documentation complete.
+**Phases 1–7 substantially implemented.** The FastAPI backend (auth, posts,
+comments, likes, follows, blocks, DMs, stories, notifications, reports),
+the four-layer moderation cascade with human-verification queue and admin
+review, the Flutter client (auth, feed, chat, profile, moderation UI), and
+SafeChat Mode (conditional E2E encryption) are all built and deployed via
+GitHub Actions to Cloud Run + Firebase. Remaining gaps: environment
+separation (single Firebase project), error monitoring/alerting, and the
+Phase 8+ items below. The phase plan is retained for historical context.
 
 ---
 

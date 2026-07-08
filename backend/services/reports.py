@@ -139,3 +139,42 @@ async def get_reports(
         return [Report.model_validate(snap.to_dict()) for snap in q.stream()]
 
     return await asyncio.to_thread(_query)
+
+
+class ReportNotFound(Exception):
+    """Raised when a report to resolve does not exist."""
+
+
+async def resolve_report(
+    report_id: str,
+    admin_uid: str,
+    action: str,
+    notes: str,
+) -> Report:
+    """Record an admin's resolution of a report (API-08, contract §11).
+
+    Sets status to "dismissed" for the dismiss action, otherwise "reviewed",
+    and records the action/notes/admin/timestamp. Enforcing the action's side
+    effects (blocking content, suspending the user) is deliberately out of
+    scope here — those are separate moderation operations; this endpoint
+    records the decision so the report leaves the pending queue.
+
+    Raises:
+        ReportNotFound: if the report does not exist.
+    """
+    ref = db.collection(REPORTS_COLLECTION).document(report_id)
+    snap = await asyncio.to_thread(ref.get)
+    if not snap.exists:
+        raise ReportNotFound(report_id)
+
+    new_status = "dismissed" if action == "dismiss" else "reviewed"
+    updates: dict[str, Any] = {
+        "status": new_status,
+        "resolution_action": action,
+        "resolution_notes": notes,
+        "resolved_by": admin_uid,
+        "resolved_at": firestore.SERVER_TIMESTAMP,
+    }
+    await asyncio.to_thread(ref.update, updates)
+    snap2 = await asyncio.to_thread(ref.get)
+    return Report.model_validate(snap2.to_dict())

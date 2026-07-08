@@ -251,6 +251,72 @@ async def test_create_story_with_toxic_text_raises(
 
 
 @pytest.mark.asyncio
+async def test_create_story_flagged_submit_for_review_enqueues(
+    fake_db: _FakeDB, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """API-04: flagged + submit_for_review -> pending_review + queue record."""
+
+    async def fake_moderate(text: str) -> ModerationResult:
+        return ModerationResult(
+            blocked=True,
+            layer="keyword",
+            category="english_slurs",
+            reason="keyword match: idiot",
+            content_hash="h",
+        )
+
+    async def fake_profile(uid: str) -> None:
+        return None  # username falls back to "unknown"
+
+    monkeypatch.setattr(stories_service, "moderate_text", fake_moderate)
+    monkeypatch.setattr(stories_service.users_service, "get_user_profile", fake_profile)
+
+    story = await stories_service.create_story(
+        "uid-1", "https://example.com/img.jpg", text="idiot", submit_for_review=True
+    )
+
+    assert story.status == "pending_review"
+    queue = fake_db._stores.get("moderation_queue", {})
+    assert len(queue) == 1
+    item = next(iter(queue.values()))
+    assert item["content_type"] == "story"
+    assert item["content_id"] == story.id
+    assert item["author_uid"] == "uid-1"
+    assert item["status"] == "pending_review"
+
+
+@pytest.mark.asyncio
+async def test_set_story_status_approves_pending_story(fake_db: _FakeDB) -> None:
+    now = datetime.now(timezone.utc)
+    fake_db.collection("stories").document("s1").set(
+        {
+            "id": "s1",
+            "author_uid": "uid-1",
+            "image_url": "https://example.com/img.jpg",
+            "text": "hello",
+            "status": "pending_review",
+            "view_count": 0,
+            "created_at": now,
+            "expires_at": now + timedelta(hours=24),
+            "schema_version": 1,
+        }
+    )
+
+    story = await stories_service.set_story_status("s1", "approved")
+    assert story.status == "approved"
+
+    rejected = await stories_service.set_story_status("s1", "rejected", "not ok")
+    assert rejected.status == "rejected"
+    assert rejected.rejection_reason == "not ok"
+
+
+@pytest.mark.asyncio
+async def test_set_story_status_missing_story_raises(fake_db: _FakeDB) -> None:
+    with pytest.raises(stories_service.StoryNotFound):
+        await stories_service.set_story_status("nope", "approved")
+
+
+@pytest.mark.asyncio
 async def test_create_story_without_text_skips_moderation(
     fake_db: _FakeDB, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -365,7 +431,10 @@ def test_post_story_returns_201(
     _override_claims({"uid": "uid-1", "admin": False})
 
     async def fake_create(
-        author_uid: str, image_url: str, text: str | None = None
+        author_uid: str,
+        image_url: str,
+        text: str | None = None,
+        submit_for_review: bool = False,
     ) -> Story:
         return _sample_story(author_uid=author_uid, image_url=image_url, text=text)
 
@@ -389,7 +458,10 @@ def test_post_story_toxic_text_returns_422(
     _override_claims({"uid": "uid-1", "admin": False})
 
     async def fake_create(
-        author_uid: str, image_url: str, text: str | None = None
+        author_uid: str,
+        image_url: str,
+        text: str | None = None,
+        submit_for_review: bool = False,
     ) -> Story:
         raise stories_service.StoryBlocked(layer="keyword", reason="blocked")
 
@@ -402,8 +474,10 @@ def test_post_story_toxic_text_returns_422(
 
     assert response.status_code == 422
     body = response.json()
-    assert body["error"]["code"] == "MODERATION_BLOCKED"
+    # API-04: flagged stories use the same code as posts/comments/messages.
+    assert body["error"]["code"] == "MODERATION_FLAGGED"
     assert body["error"]["field"] == "text"
+    assert body["error"]["matches"] == []
 
 
 def test_get_feed_stories_returns_list(

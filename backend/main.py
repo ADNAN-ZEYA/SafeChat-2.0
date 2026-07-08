@@ -17,6 +17,14 @@ from fastapi.responses import JSONResponse
 
 from core import API_VERSION, firebase  # noqa: F401  — firebase import triggers Admin SDK init
 from core.config import get_settings
+from core.logging import (
+    configure_logging,
+    get_request_id,
+    new_request_id,
+    reset_request_id,
+    set_request_id,
+)
+from middleware.rate_limit import install_rate_limiter
 from routes import admin as admin_routes
 from routes import auth as auth_routes
 from routes import health
@@ -52,8 +60,11 @@ _VALIDATION_LOC_PREFIXES = {"body", "query", "path", "header", "cookie"}
 
 
 def _make_meta() -> dict[str, str]:
+    # Reuse the correlated request id (PR-03) so an error envelope and the
+    # server log lines for the same request share one id.
+    rid = get_request_id()
     return {
-        "request_id": str(uuid.uuid4()),
+        "request_id": rid if rid != "-" else str(uuid.uuid4()),
         "timestamp": datetime.now(timezone.utc).isoformat(),
     }
 
@@ -78,7 +89,7 @@ def _envelope_error(
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     """Application startup and shutdown hooks."""
     settings = get_settings()
-    logging.basicConfig(level=settings.log_level.upper())
+    configure_logging(settings.log_level)
     logger.info(
         "SafeChat API starting (environment=%s, project=%s)",
         settings.environment,
@@ -150,18 +161,42 @@ def create_app() -> FastAPI:
         lifespan=lifespan,
     )
 
+    # SEC-11: only trust arbitrary localhost origins outside production. In
+    # production the explicit cors_origins allowlist is the sole authority —
+    # a deployed API has no reason to accept requests from localhost pages.
+    localhost_regex = None if settings.is_production else r"http://localhost(:\d+)?"
     app.add_middleware(
         CORSMiddleware,
         allow_origins=settings.cors_origins,
-        # Allow any localhost port for Flutter web dev server (random ports).
-        allow_origin_regex=r"http://localhost(:\d+)?",
+        allow_origin_regex=localhost_regex,
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],
     )
 
+    # PR-03: correlate logs with a per-request id (reused from an inbound
+    # X-Request-ID when the client/proxy sets one). Registered before the
+    # rate limiter so even rate-limited responses carry the id.
+    @app.middleware("http")
+    async def _request_id_middleware(request: Request, call_next):  # type: ignore[no-untyped-def]
+        incoming = request.headers.get("x-request-id")
+        request_id = incoming if incoming else new_request_id()
+        token = set_request_id(request_id)
+        try:
+            response = await call_next(request)
+        finally:
+            reset_request_id(token)
+        response.headers["X-Request-ID"] = request_id
+        return response
+
     app.add_exception_handler(HTTPException, _http_exception_handler)
     app.add_exception_handler(RequestValidationError, _validation_exception_handler)
+
+    # API-01: per-endpoint-group rate limits (API_CONTRACTS.md §14). Off in
+    # development (and therefore in the test suite) unless forced via
+    # RATE_LIMIT_ENABLED — see Settings.rate_limit_effective.
+    if settings.rate_limit_effective:
+        install_rate_limiter(app)
 
     app.include_router(health.router, prefix=API_V1_PREFIX)
     app.include_router(auth_routes.router, prefix=API_V1_PREFIX)

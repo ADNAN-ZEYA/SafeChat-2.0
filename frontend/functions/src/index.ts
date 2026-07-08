@@ -1,32 +1,56 @@
 /**
- * Import function triggers from their respective submodules:
+ * SafeChat Cloud Functions.
  *
- * import {onCall} from "firebase-functions/v2/https";
- * import {onDocumentWritten} from "firebase-functions/v2/firestore";
+ * Currently: scheduled cleanup of expired stories (CQ-10).
  *
- * See a full list of supported triggers at https://firebase.google.com/docs/functions
+ * Stories carry an `expires_at` (created_at + 24h) and are already hidden
+ * from every read path once expired (backend filters `expires_at > now`), so
+ * this job is purely about bounding Firestore growth / storage cost — it is
+ * NOT user-visible behavior. Documented in docs/DATABASE_SCHEMA.md
+ * ("Scheduled Cloud Function runs hourly").
  */
 
 import {setGlobalOptions} from "firebase-functions";
-import {onRequest} from "firebase-functions/https";
+import {onSchedule} from "firebase-functions/v2/scheduler";
 import * as logger from "firebase-functions/logger";
+import {initializeApp} from "firebase-admin/app";
+import {getFirestore, Timestamp} from "firebase-admin/firestore";
 
-// Start writing functions
-// https://firebase.google.com/docs/functions/typescript
+setGlobalOptions({maxInstances: 10});
 
-// For cost control, you can set the maximum number of containers that can be
-// running at the same time. This helps mitigate the impact of unexpected
-// traffic spikes by instead downgrading performance. This limit is a
-// per-function limit. You can override the limit for each function using the
-// `maxInstances` option in the function's options, e.g.
-// `onRequest({ maxInstances: 5 }, (req, res) => { ... })`.
-// NOTE: setGlobalOptions does not apply to functions using the v1 API. V1
-// functions should each use functions.runWith({ maxInstances: 10 }) instead.
-// In the v1 API, each function can only serve one request per container, so
-// this will be the maximum concurrent request count.
-setGlobalOptions({ maxInstances: 10 });
+initializeApp();
+const db = getFirestore();
 
-// export const helloWorld = onRequest((request, response) => {
-//   logger.info("Hello logs!", {structuredData: true});
-//   response.send("Hello from Firebase!");
-// });
+// Firestore caps writes at 500 per batch.
+const BATCH_LIMIT = 500;
+
+/**
+ * Delete stories whose `expires_at` is in the past, in batches.
+ * Runs hourly. Each invocation clears up to BATCH_LIMIT expired stories;
+ * with hourly cadence and a 24h TTL this comfortably keeps pace with
+ * realistic story volumes.
+ */
+export const cleanupExpiredStories = onSchedule(
+  {schedule: "every 60 minutes", timeoutSeconds: 300},
+  async () => {
+    const now = Timestamp.now();
+    const expired = await db
+      .collection("stories")
+      .where("expires_at", "<=", now)
+      .limit(BATCH_LIMIT)
+      .get();
+
+    if (expired.empty) {
+      logger.info("cleanupExpiredStories: nothing to delete");
+      return;
+    }
+
+    const batch = db.batch();
+    expired.docs.forEach((doc) => batch.delete(doc.ref));
+    await batch.commit();
+
+    logger.info(
+      `cleanupExpiredStories: deleted ${expired.size} expired story doc(s)`
+    );
+  }
+);

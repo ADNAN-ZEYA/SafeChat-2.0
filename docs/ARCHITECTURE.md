@@ -72,7 +72,9 @@ Every write (message, post, comment, story, profile update) must pass through th
 
 **Responsibilities:**
 - Verify Firebase Auth tokens on every request.
-- Run all content through the moderation engine (currently TF-IDF keyword detection) before persisting.
+- Run all content through the moderation cascade (weighted lexicon → TF-IDF
+  classifier → OpenAI Moderation → Vision SafeSearch on images) before
+  persisting. Layers fail open; OpenAI/Vision run when configured.
 - Write moderated content to Firestore.
 - Dispatch push notifications via FCM.
 - Handle media upload pipeline (signed URLs to Firebase Storage).
@@ -129,13 +131,20 @@ Currently, the Moderation Engine relies strictly on **TF-IDF Keyword Detection**
 2. App calls POST /api/v1/messages
    - Includes Firebase Auth ID token
 3. Backend verifies token via Firebase Admin SDK
-4. Backend runs message through moderation engine:
-   a. Normalize text
-   b. Check TF-IDF Keyword Filter
-   c. If toxic → respond 200 with blocked status
-5. If clean: write to /chats/{chatId}/messages/{messageId} in Firestore
-6. Recipient's Firestore listener triggers — message appears instantly
-7. Backend dispatches FCM push notification to recipient
+4. Backend enforces the relationship guard (blocks + `allow_messages_from`)
+5. Backend runs message through the moderation cascade (lexicon → TF-IDF →
+   OpenAI → Vision-on-image):
+   a. Clean → status `approved`
+   b. Flagged, not submitted → `422 MODERATION_FLAGGED` (with match spans)
+   c. Flagged + `submit_for_review` → status `pending_review`, queued
+6. If approved: write to /chats/{chatId}/messages/{messageId} in Firestore
+7. Recipient's Firestore listener triggers — message appears instantly
+8. Backend dispatches FCM push notification to recipient (token at
+   `fcm_tokens/{uid}`)
+
+> **SafeChat Mode exception:** in a `trusted` chat the client encrypts the
+> message before it reaches the backend, which stores ciphertext and skips
+> the cascade entirely. See docs/MODERATION.md and DATABASE_SCHEMA.md §10.
 ```
 
 ### Uploading a Post with Image

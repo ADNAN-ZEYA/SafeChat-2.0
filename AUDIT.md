@@ -12,26 +12,27 @@
 
 SafeChat 2.0 is an AI-moderated, teen-safety-focused social platform (Flutter + FastAPI on Cloud Run + Firebase) with a conditional-E2EE messaging feature ("SafeChat Mode"). The architecture is fundamentally sound: disciplined route/service layering, Firestore transactions where consistency matters, a fail-open four-layer moderation cascade, deny-by-default security rules, a private storage bucket with signed URLs, and an exemplary multi-stage non-root Dockerfile. **SafeChat Mode (E2EE) is fully implemented end-to-end — UI toggle, backend gate, key management, and real runtime behavior change** (§6).
 
-However, the audit found **1 Critical and 7 High** findings that block safe production deployment. The most severe: any authenticated user can unpublish any other user's post via an unauthorized status write (IDOR); user search is 100% broken by a one-character bug; a duplicate profile-update route bypasses content moderation entirely; blocked users can still DM the people who blocked them; and push notifications are structurally non-functional because the FCM token is written to one Firestore location and read from another.
+However, the audit found **1 Critical and 6 High** findings that block safe production deployment. The most severe: any authenticated user can unpublish any other user's post via an unauthorized status write (IDOR); a duplicate profile-update route bypasses content moderation entirely; blocked users can still DM the people who blocked them; and push notifications are structurally non-functional because the FCM token is written to one Firestore location and read from another.
 
 ### Finding totals
 
 | Severity | Count |
 |---|---:|
 | **Critical** | **1** |
-| **High** | **7** |
+| **High** | **6** |
 | **Medium** | **13** |
 | **Low** | **13** |
-| **Total** | **34** |
+| **Total** | **33** |
+
+> **Correction (Phase 2):** SEC-02 ("broken user search") was **withdrawn as a false positive** during implementation — see the SEC-02 entry in section 2. Totals above reflect the correction.
 
 ### Highest-priority fixes (in order)
 
 1. SEC-01 — Appeals IDOR (any user can hide any post)
-2. SEC-02 — Broken user search (`+ ""` instead of `+ ""`)
-3. SEC-03 — `PATCH /auth/profile` moderation bypass
-4. SEC-05 — Blocks not enforced in messaging (harassment vector in an anti-bullying app)
-5. SEC-06 — FCM push notifications non-functional (write/read path mismatch)
-6. SEC-04 — Firestore rule exposes every user's notifications to all users
+2. SEC-03 — `PATCH /auth/profile` moderation bypass
+3. SEC-05 — Blocks not enforced in messaging (harassment vector in an anti-bullying app)
+4. SEC-06 — FCM push notifications non-functional (write/read path mismatch)
+5. SEC-04 — Firestore rule exposes every user's notifications to all users
 
 ### Architectural recommendations
 
@@ -44,7 +45,7 @@ However, the audit found **1 Critical and 7 High** findings that block safe prod
 
 | Bucket | Effort |
 |---|---|
-| Critical + High (8 findings) | ~2–3 focused days |
+| Critical + High (7 findings) | ~2–3 focused days |
 | Medium (13 findings) | ~4–6 days |
 | Low (13 findings) | ~2–3 days |
 | **Total to production-ready** | **~2 sprint weeks** |
@@ -59,11 +60,11 @@ However, the audit found **1 Critical and 7 High** findings that block safe prod
 - **Impact:** Trivial denial-of-content attack against any user. Also writes to an `appeals` collection nothing reads (admin portal reads `moderation_queue`), so real appeals vanish. The comment/`pass` branches (lines 111–118) are dev remnants.
 - **Fix:** Verify `claims["uid"] == post.author_uid` before any status change; route appeals through `moderation_queue`; remove dead branches.
 
-### SEC-02 · HIGH · User search permanently returns zero results
+### SEC-02 · WITHDRAWN (false positive) · User search
 - **File:** `backend/services/users.py`, `search_users`, line 264
-- **Issue:** ``end = normalised + ""`` (empty string appended) — upper bound equals lower bound, so ``username >= q AND username < q`` matches nothing. The docstring (lines 255-257) specifies appending the Firestore prefix sentinel U+F8FF.
-- **Impact:** Core discovery feature is dead in production. Tests pass because the test fake's `where()` is a no-op (see CQ-12).
-- **Fix:** `end = normalised + "\uf8ff"` (the standard Firestore prefix-range upper bound, written as a Python escape).
+- **Original claim:** the range upper bound appended an empty string, making the prefix query match nothing.
+- **Correction:** a byte-level inspection during Phase 2 shows the code appends the Firestore prefix sentinel **U+F8FF** (UTF-8 bytes `EF A3 BF`): `end = normalised + "\uf8ff"`. The character is invisible in rendered file views, which is what produced the false reading. **The search implementation is correct as committed; no change was made.**
+- **Lesson recorded:** claims about invisible/whitespace-class characters must be verified with a hex dump before being reported.
 
 ### SEC-03 · HIGH · Moderation bypass via duplicate profile route
 - **File:** `backend/routes/auth.py`, `update_profile`, lines 144–181
@@ -190,7 +191,7 @@ All six required components exist and are wired end-to-end. **The toggle genuine
 | CQ-09 | LOW | `frontend/lib/features/auth/presentation/login_screen.dart:160` | `// TODO: Navigate to forgot password screen` — dead button | Implement or hide |
 | CQ-10 | LOW | `frontend/functions/src/index.ts:1–33` | Cloud Functions scaffold entirely commented out — dead code; the story-expiry job documented in `DATABASE_SCHEMA.md:232–237` does not exist anywhere | Either implement the TTL job here or remove `frontend/functions/` |
 | CQ-11 | LOW | `requirements.txt` (repo root) | Stray one-line file (`google-cloud-vision==3.14.0`) duplicating a `backend/requirements.txt` entry — confuses tooling and stack detection | Delete |
-| CQ-12 | LOW | `backend/tests/test_messages.py:65–68` (pattern repeated across the suite) | In-memory Firestore fake's `where()` is a documented no-op — query-shape bugs (SEC-02) sail through green tests; frontend has a single placeholder test (`frontend/test/widget_test.dart`) | Implement basic filter support or add emulator-backed integration tests; add real widget tests |
+| CQ-12 | LOW | `backend/tests/test_messages.py:65–68` (pattern repeated across the suite) | In-memory Firestore fake's `where()` is a documented no-op — query-shape bugs would sail through green tests; frontend has a single placeholder test (`frontend/test/widget_test.dart`) | Implement basic filter support or add emulator-backed integration tests; add real widget tests |
 | CQ-13 | LOW | `.github/modernize/java-upgrade/` | Leftover third-party tooling remnant (Java-upgrade hook scripts) unrelated to this Flutter/Python project. Per scope rules it was **not** followed or executed — flagged as an external-tooling reference | Delete the directory |
 
 **Explicitly good (no findings):** moderation engine layering (`moderation/engine.py`), lexicon design with ReDoS-safe possessive quantifiers and span capture (`moderation/lexicon.py`), transaction discipline (`services/follows.py`, `services/users.py:76–131`, `services/posts.py:328–354`), pure `build_item` for batch-consistent queue writes (`services/moderation_queue.py:40–81`), the error-envelope design in `main.py`, and strict tooling (`backend/pyproject.toml`: mypy strict, ruff+bugbear, black).
@@ -269,3 +270,73 @@ Per repository governance, these fixes touch OWNER-ONLY paths and will **not** b
 
 - Working tree verified **clean** at audit time (HEAD `4f8ee8c`); the only file created by this audit is `AUDIT.md` itself.
 - Awaiting explicit approval (full or per-finding) before any implementation begins.
+
+---
+
+## Phase 2 Implementation Log
+
+Phase 2 was approved in full. Each finding was implemented as an isolated
+commit referencing its ID; the full backend suite (276 passed, 2 skipped),
+`flutter analyze` (0 issues), and `flutter test` were green after every logical
+group. Nothing was pushed — commits are local, awaiting review.
+
+### Completed
+
+| Finding | Status | Key files |
+|---|---|---|
+| SEC-01 | ✅ Fixed | Removed the IDOR appeals endpoint (`routes/moderation.py`); human verification runs solely through `moderation_queue` |
+| SEC-02 | ⏹️ Withdrawn | False positive — search already appends U+F8FF (verified by hex dump); see §2 |
+| SM-01 | ✅ Fixed | Client awaits authoritative mode before send; backend rejects non-ciphertext in trusted chats (`services/messages.py`, `chat_detail_view.dart`) |
+| SEC-03 | ✅ Fixed | `/auth/profile` now delegates to the moderated `/users/me` implementation |
+| SEC-04 | ✅ Fixed | `firestore.rules` — user subcollections readable only by owner; user docs backend-write-only |
+| SEC-05 | ✅ Fixed | Relationship guard (blocks + `allow_messages_from`) in chat creation and send |
+| SEC-06 | ✅ Fixed | FCM tokens written to `fcm_tokens/{uid}` where the sender reads them |
+| SEC-07 | ✅ Fixed | Onboarding username/display_name/bio moderated |
+| SEC-08 | ✅ Fixed | DM images screened by Vision SafeSearch |
+| SEC-09 | ✅ Fixed | Added deny-all `storage.rules`, registered in `firebase.json` |
+| SEC-11 | ✅ Fixed | localhost CORS regex disabled in production |
+| API-01 | ✅ Fixed | Per-endpoint-group rate limiting middleware |
+| API-02 | ✅ Fixed | Single shared profile-update implementation |
+| API-03 | ✅ Fixed | `video/mp4` + size caps + `size_bytes`; `INVALID_CONTENT_TYPE`/`FILE_TOO_LARGE` |
+| API-04 | ✅ Fixed | Story `submit_for_review` human-verification flow |
+| API-06 | ✅ Fixed | Health reports OpenAI/Vision configuration status |
+| API-07 | ✅ Fixed | `POST /notifications/read` batch endpoint |
+| API-08 | ✅ Fixed | `POST /reports/{id}/resolve` (reports were unactionable) |
+| HC-01/02/03 | ✅ Fixed | Hardcoded project ID → `${{ secrets.GCP_PROJECT_ID }}` in all three workflows |
+| HC-04 | ✅ Fixed | dio_client fails fast when `API_BASE_URL` missing in release |
+| HC-05/06 | ✅ Fixed | OpenAI model/timeout + TF-IDF threshold moved to settings |
+| SM-02 | ✅ Fixed | Shared key derived reactively from peer's published key |
+| CQ-01 | ✅ Fixed | `unread_counts` lifecycle + chat-list field-name repairs |
+| CQ-02 | ✅ Fixed | Admin review made transactional (claim-then-apply + compensation) |
+| CQ-03 | ✅ Fixed | `core/tasks.fire_and_forget` holds strong task references |
+| CQ-04 | ✅ Fixed | Chat-list peer profiles cached via family provider |
+| CQ-05 | ✅ Fixed | Username charset enforced on update; cooldown → 400 |
+| CQ-06 | ✅ Fixed | `get_posts_by_author` uses a composite index |
+| CQ-07 | ✅ Fixed | Message pagination over-fetches past hidden messages |
+| CQ-08 | ✅ Fixed | `mark_as_read` fail-open |
+| CQ-09 | ✅ Fixed | Forgot-password flow via Firebase reset email |
+| CQ-10 | ✅ Fixed | `cleanupExpiredStories` scheduled Cloud Function |
+| CQ-11 | ✅ Fixed | Removed stray root `requirements.txt` |
+| CQ-12 | ✅ Fixed | Real moderation-highlight widget tests replace the placeholder |
+| CQ-13 | ✅ N/A | `.github/modernize/` is untracked/ignored — not in the committed repo |
+| PR-03 | ✅ Fixed | Request-ID log correlation + `X-Request-ID` echo |
+| DOC-01 | ✅ Fixed | API contracts, architecture, roadmap, schema reconciled |
+| SEC-10 | 📋 Config-only | Firebase web keys are public-by-design; needs Cloud Console API-key restrictions + App Check — no code change |
+| Indexes | ✅ Fixed | Composite indexes added for feed/stories/chats/reports queries |
+
+### Deferred — require your decision (not implemented)
+
+- **PR-01 (environment separation):** needs a second Firebase/GCP project +
+  per-environment `firebase_options`. Infrastructure decision, not a code fix.
+- **PR-02 (monitoring/alerting):** needs a Sentry DSN / Crashlytics setup and
+  external accounts. Requires an ops decision before wiring.
+- **Dependency migrations (Priority 6):** `flutter_markdown` (discontinued),
+  `google_sign_in` 6→7, and `intl_phone_field` are all **breaking** API/import
+  changes touching working UI. Per the ambiguity policy these were flagged, not
+  auto-applied — each needs a scoped migration + regression pass.
+- **API keyword CRUD / direct post approve-block:** documented as "planned" in
+  the reconciled contract; implementing runtime keyword management requires
+  moving the lexicon into Firestore (a design change), so it was left as a
+  documented gap rather than guessed at.
+
+*Repository left with local commits only; no push/merge/rebase performed.*

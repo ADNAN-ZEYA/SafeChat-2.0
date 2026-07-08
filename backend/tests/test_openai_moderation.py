@@ -16,6 +16,9 @@ from moderation.openai_moderation import check_with_openai
 class _FakeSettings:
     def __init__(self, api_key: str | None) -> None:
         self.openai_api_key = api_key
+        # HC-05: model + timeout are now settings-driven.
+        self.openai_moderation_model = "omni-moderation-latest"
+        self.openai_timeout_seconds = 3.0
 
 
 def _patch_settings(monkeypatch: pytest.MonkeyPatch, api_key: str | None) -> None:

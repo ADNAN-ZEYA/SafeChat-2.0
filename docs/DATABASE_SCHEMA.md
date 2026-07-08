@@ -230,10 +230,10 @@ Document ID = liker's UID.
 ```
 
 **Auto-expiry:**
-Firestore doesn't have native TTL. Implemented via:
-- Scheduled Cloud Function runs hourly
-- Queries stories where `expires_at < now` and `status = approved`
-- Updates status to `expired`
+Firestore has no native TTL. Reads already hide expired stories
+(`expires_at > now` filter). To bound storage growth, the
+`cleanupExpiredStories` scheduled Cloud Function (`frontend/functions/`) runs
+hourly and **deletes** stories whose `expires_at` is in the past, in batches.
 
 ### `chats/{chatId}`
 
@@ -243,15 +243,14 @@ Chat ID format: `{sorted_uid1}_{sorted_uid2}` — alphabetically sorted UIDs joi
 {
   id: string,
   participants: string[],       // [uid1, uid2]
-  
-  last_message: {
-    text: string,               // truncated to 100 chars
-    sender_uid: string,
-    created_at: Timestamp,
-  } | null,
-  
+
+  // Denormalized last-message preview. Stored as FLAT fields (not a nested
+  // object) — this is what services/messages.py writes and the chat list reads.
+  last_message_text: string | null,  // "🔒 Encrypted message" in trusted chats
+  last_message_at: Timestamp | null,
+
   unread_counts: {
-    [uid: string]: number,
+    [uid: string]: number,      // per-participant badge; reset via POST /chats/{id}/read
   },
   
   // SafeChat Mode. "pending" = ON (unencrypted, full moderation pipeline).
@@ -399,9 +398,9 @@ Subcollection — notifications are user-scoped.
   target_type: "post" | "comment" | "story" | "profile",
   target_id: string,
   target_preview: string,       // 100 chars of context
-  
-  read: boolean,
-  
+
+  is_read: boolean,             // field name in code is `is_read`
+
   created_at: Timestamp,
 }
 ```

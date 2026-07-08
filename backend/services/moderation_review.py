@@ -20,6 +20,7 @@ from services import messages as messages_service
 from services import moderation_queue
 from services import notifications as notifications_service
 from services import posts as posts_service
+from services import stories as stories_service
 
 logger = logging.getLogger(__name__)
 
@@ -45,10 +46,13 @@ async def _apply_to_content(item: ModerationQueueItem, status: str, reason: str 
             await comments_service.set_comment_status(item.post_id, item.content_id, status, reason)
         elif item.content_type == "message" and item.chat_id:
             await messages_service.set_message_status(item.chat_id, item.content_id, status, reason)
+        elif item.content_type == "story":
+            await stories_service.set_story_status(item.content_id, status, reason)
     except (
         posts_service.PostNotFound,
         comments_service.CommentNotFound,
         messages_service.MessageNotFound,
+        stories_service.StoryNotFound,
     ):
         logger.warning(
             "Content %s/%s gone before review resolved; queue updated anyway.",
@@ -58,9 +62,12 @@ async def _apply_to_content(item: ModerationQueueItem, status: str, reason: str 
 
 
 async def _notify_author(item: ModerationQueueItem, status: str, reason: str | None) -> None:
-    label = {"post": "post", "comment": "comment", "message": "message"}.get(
-        item.content_type, "content"
-    )
+    label = {
+        "post": "post",
+        "comment": "comment",
+        "message": "message",
+        "story": "story",
+    }.get(item.content_type, "content")
     if status == "approved":
         title = "Your content was approved"
         body = f"Your {label} passed human review and is now visible."
@@ -83,14 +90,29 @@ async def _notify_author(item: ModerationQueueItem, status: str, reason: str | N
 async def _decide(
     queue_id: str, admin_uid: str, status: str, reason: str | None
 ) -> ModerationQueueItem:
-    item = await moderation_queue.get(queue_id)
-    if item is None:
-        raise QueueItemNotFound(queue_id)
-    if item.status != "pending_review":
-        raise AlreadyResolved(queue_id)
+    # CQ-02: claim the queue item FIRST, inside a transaction, so two admins
+    # deciding the same item can never both apply the decision (which would
+    # e.g. double-increment post_count on approve). Exactly one claim wins.
+    try:
+        item = await moderation_queue.claim_pending(queue_id, status, admin_uid, reason)
+    except moderation_queue.QueueItemNotFound as exc:
+        raise QueueItemNotFound(queue_id) from exc
+    except moderation_queue.AlreadyClaimed as exc:
+        raise AlreadyResolved(queue_id) from exc
 
-    await _apply_to_content(item, status, reason)
-    await moderation_queue.mark_resolved(queue_id, status, admin_uid, reason)
+    try:
+        await _apply_to_content(item, status, reason)
+    except Exception:
+        # The claim succeeded but the content update failed (transient
+        # Firestore error — *NotFound is swallowed inside _apply_to_content).
+        # Release the claim so the item stays reviewable, then surface the
+        # original error to the admin.
+        try:
+            await moderation_queue.release_claim(queue_id)
+        except Exception:  # pragma: no cover — best-effort compensation
+            logger.exception("Failed to release claim on queue item %s", queue_id)
+        raise
+
     await _notify_author(item, status, reason)
 
     resolved = await moderation_queue.get(queue_id)

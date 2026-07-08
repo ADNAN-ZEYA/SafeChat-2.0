@@ -222,6 +222,21 @@ class AuthRepository {
     }
   }
 
+  /// Sends a Firebase password-reset email (CQ-09). Throws a user-facing
+  /// message on failure; a nonexistent email is treated as success so the
+  /// UI does not reveal which addresses are registered (enumeration guard).
+  Future<void> sendPasswordResetEmail(String email) async {
+    try {
+      await _firebaseAuth.sendPasswordResetEmail(email: email.trim());
+    } on firebase.FirebaseAuthException catch (e) {
+      if (e.code == 'user-not-found') return;
+      if (e.code == 'invalid-email') {
+        throw Exception('That email address looks invalid.');
+      }
+      throw Exception('Could not send reset email. Please try again.');
+    }
+  }
+
   Future<void> signOut() async {
     await _googleSignIn.signOut();
     await _firebaseAuth.signOut();

@@ -17,6 +17,7 @@ from google.cloud import firestore
 from google.cloud.firestore import DocumentReference, FieldFilter
 
 from core.firebase import db
+from core.tasks import fire_and_forget
 from models.moderation import Match
 from models.post import Post
 from moderation.engine import moderate_image, moderate_text
@@ -183,10 +184,14 @@ async def create_post(
     post = Post.model_validate(snap.to_dict())
 
     # Fire-and-forget image moderation. Runs after the post is already stored;
-    # quietly rejects the post if the Vision check trips.
+    # quietly rejects the post if the Vision check trips. Tracked via
+    # core.tasks so the task cannot be garbage-collected mid-flight (CQ-03).
     if media_urls and media_type == "image":
         for url in media_urls:
-            asyncio.create_task(_moderate_post_image(post.id, url))
+            fire_and_forget(
+                _moderate_post_image(post.id, url),
+                name=f"moderate-post-image:{post.id}",
+            )
 
     return post
 
@@ -306,21 +311,18 @@ async def get_posts_by_author(
     cap = min(limit, 50)
 
     def _query() -> list[Post]:
-        # Single equality filter avoids requiring a composite index.
-        # Status filter and sort happen in Python.
+        # CQ-06: filter + sort + limit server-side via the composite index
+        # (author_uid ASC, status ASC, created_at DESC) declared in
+        # firestore.indexes.json — instead of fetching 200 docs and filtering
+        # in Python. Reads at most `cap` documents.
         q = (
             db.collection(POSTS_COLLECTION)
             .where(filter=FieldFilter("author_uid", "==", author_uid))
-            .limit(200)
+            .where(filter=FieldFilter("status", "==", "approved"))
+            .order_by("created_at", direction=firestore.Query.DESCENDING)
+            .limit(cap)
         )
-        results: list[Post] = []
-        for snap in q.stream():
-            d = snap.to_dict() or {}
-            post = Post.model_validate(d)
-            if post.status == "approved":
-                results.append(post)
-        results.sort(key=lambda p: p.created_at, reverse=True)
-        return results[:cap]
+        return [Post.model_validate(snap.to_dict() or {}) for snap in q.stream()]
 
     return await asyncio.to_thread(_query)
 

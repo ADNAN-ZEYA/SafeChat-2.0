@@ -22,6 +22,7 @@ import hashlib
 import logging
 import time
 
+from core.config import get_settings
 from models.moderation import ModerationResult
 from moderation import lexicon, tfidf_model
 from moderation.openai_moderation import check_with_openai
@@ -29,12 +30,11 @@ from moderation.vision import check_image_with_vision
 
 logger = logging.getLogger(__name__)
 
-# Flag text whose Layer-2 toxicity probability meets this threshold even when no
-# lexicon term fired. Clean text scores ~0.35 and clearly toxic phrasing ~0.6+
-# on the current seed model, so 0.5 separates them; the human-verification flow
-# is the safety valve for anything wrongly caught. Lower it to catch more (at the
-# cost of false positives) and grow moderation/data/seed_corpus.csv to sharpen it.
-TFIDF_FLAG_THRESHOLD = 0.55
+# HC-06: the Layer-2 flag threshold is a tuning parameter, configurable via
+# TFIDF_FLAG_THRESHOLD (see core/config.py). Lower it to catch more at the
+# cost of false positives; the human-verification flow is the safety valve
+# for anything wrongly caught. Grow moderation/data/seed_corpus.csv and
+# retrain to sharpen the model itself.
 
 
 def hash_content(text: str) -> str:
@@ -89,7 +89,7 @@ async def moderate_text(text: str) -> ModerationResult:
     tfidf = tfidf_model.score(text)
     layer_latencies["tfidf"] = _now_ms() - layer_start
 
-    if tfidf is not None and tfidf >= TFIDF_FLAG_THRESHOLD:
+    if tfidf is not None and tfidf >= get_settings().tfidf_flag_threshold:
         return ModerationResult(
             blocked=True,
             layer="tfidf",

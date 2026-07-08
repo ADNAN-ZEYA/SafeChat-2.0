@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import base64
 import uuid
 from collections.abc import Iterator
 from datetime import UTC, datetime
@@ -384,6 +385,11 @@ async def test_send_message_non_participant_raises_not_authorized(
         await messages_service.send_message("uid-1_uid-2", "uid-outsider", "Hello!")
 
 
+# Structurally valid E2E payload: base64 of >= 28 bytes (12-byte nonce +
+# 16-byte MAC) — mirrors what the Flutter client's encryptText() produces.
+_VALID_CIPHERTEXT = base64.b64encode(b"\x01" * 40).decode("ascii")
+
+
 @pytest.mark.asyncio
 async def test_send_message_trusted_mode_skips_moderation(
     fake_db: _FakeDB, monkeypatch: pytest.MonkeyPatch
@@ -395,13 +401,260 @@ async def test_send_message_trusted_mode_skips_moderation(
 
     monkeypatch.setattr(messages_service, "moderate_text", fake_moderate)
 
-    msg = await messages_service.send_message("uid-1_uid-2", "uid-1", "ciphertext-blob")
+    msg = await messages_service.send_message("uid-1_uid-2", "uid-1", _VALID_CIPHERTEXT)
 
     assert msg.status == "approved"
     assert msg.encrypted is True
-    assert msg.text == "ciphertext-blob"
+    assert msg.text == _VALID_CIPHERTEXT
     # Chat preview shows a placeholder, never the raw ciphertext.
-    assert fake_db.chats["uid-1_uid-2"]["last_message_text"] != "ciphertext-blob"
+    assert fake_db.chats["uid-1_uid-2"]["last_message_text"] != _VALID_CIPHERTEXT
+
+
+@pytest.mark.asyncio
+async def test_send_message_trusted_mode_rejects_plaintext(
+    fake_db: _FakeDB, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """SM-01: readable plaintext must never be stored as `encrypted: true`."""
+    _seed_chat(fake_db, encryption_mode="trusted")
+
+    async def fake_moderate(text: str) -> ModerationResult:
+        raise AssertionError("moderation must be skipped for trusted chats")
+
+    monkeypatch.setattr(messages_service, "moderate_text", fake_moderate)
+
+    with pytest.raises(messages_service.InvalidCiphertext):
+        await messages_service.send_message(
+            "uid-1_uid-2", "uid-1", "hey, this is plaintext!"
+        )
+
+    # Nothing was written: no message stored, preview untouched.
+    assert fake_db.messages_for("uid-1_uid-2") == {}
+    assert fake_db.chats["uid-1_uid-2"].get("last_message_text") is None
+
+
+@pytest.mark.asyncio
+async def test_send_message_trusted_mode_rejects_short_base64(
+    fake_db: _FakeDB,
+) -> None:
+    """Base64 that decodes to fewer bytes than nonce+MAC is not ciphertext."""
+    _seed_chat(fake_db, encryption_mode="trusted")
+
+    too_short = base64.b64encode(b"\x01" * 8).decode("ascii")
+    with pytest.raises(messages_service.InvalidCiphertext):
+        await messages_service.send_message("uid-1_uid-2", "uid-1", too_short)
+
+
+# --------------------------------------------------------------------------
+# SEC-05: relationship guard (blocks + allow_messages_from)
+# --------------------------------------------------------------------------
+
+
+def _seed_block(fake_db: _FakeDB, blocker: str, blocked: str) -> None:
+    fake_db.collection("blocks").document(f"{blocker}_{blocked}").set(
+        {"blocker_uid": blocker, "blocked_uid": blocked}
+    )
+
+
+def _seed_user(fake_db: _FakeDB, uid: str, **fields: Any) -> None:
+    fake_db.collection("users").document(uid).set({"uid": uid, **fields})
+
+
+@pytest.mark.asyncio
+async def test_send_message_refused_when_recipient_blocked_sender(
+    fake_db: _FakeDB,
+) -> None:
+    _seed_chat(fake_db)
+    _seed_block(fake_db, blocker="uid-2", blocked="uid-1")
+
+    with pytest.raises(messages_service.MessagingNotAllowed):
+        await messages_service.send_message("uid-1_uid-2", "uid-1", "hi")
+
+    assert fake_db.messages_for("uid-1_uid-2") == {}
+
+
+@pytest.mark.asyncio
+async def test_send_message_refused_when_sender_blocked_recipient(
+    fake_db: _FakeDB,
+) -> None:
+    _seed_chat(fake_db)
+    _seed_block(fake_db, blocker="uid-1", blocked="uid-2")
+
+    with pytest.raises(messages_service.MessagingNotAllowed):
+        await messages_service.send_message("uid-1_uid-2", "uid-1", "hi")
+
+
+@pytest.mark.asyncio
+async def test_send_message_refused_when_recipient_allows_none(
+    fake_db: _FakeDB,
+) -> None:
+    _seed_chat(fake_db)
+    _seed_user(fake_db, "uid-2", allow_messages_from="none")
+
+    with pytest.raises(messages_service.MessagingNotAllowed):
+        await messages_service.send_message("uid-1_uid-2", "uid-1", "hi")
+
+
+@pytest.mark.asyncio
+async def test_send_message_followers_mode_requires_follow(
+    fake_db: _FakeDB, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _seed_chat(fake_db)
+    _seed_user(fake_db, "uid-2", allow_messages_from="followers")
+
+    # Not following -> refused.
+    with pytest.raises(messages_service.MessagingNotAllowed):
+        await messages_service.send_message("uid-1_uid-2", "uid-1", "hi")
+
+    # Following -> allowed (moderation stubbed clean).
+    fake_db.collection("follows").document("uid-1_uid-2").set(
+        {"follower_uid": "uid-1", "followee_uid": "uid-2"}
+    )
+
+    async def fake_moderate(text: str) -> ModerationResult:
+        return ModerationResult(blocked=False, content_hash="h")
+
+    monkeypatch.setattr(messages_service, "moderate_text", fake_moderate)
+
+    msg = await messages_service.send_message("uid-1_uid-2", "uid-1", "hi")
+    assert msg.status == "approved"
+
+
+@pytest.mark.asyncio
+async def test_get_or_create_chat_refused_when_blocked(fake_db: _FakeDB) -> None:
+    _seed_block(fake_db, blocker="uid-2", blocked="uid-1")
+
+    with pytest.raises(messages_service.MessagingNotAllowed):
+        await messages_service.get_or_create_chat("uid-1", "uid-2")
+
+    assert fake_db.chats == {}
+
+
+# --------------------------------------------------------------------------
+# CQ-01: unread_counts lifecycle
+# --------------------------------------------------------------------------
+# NOTE: the fake's update() stores dotted field paths literally (e.g.
+# "unread_counts.uid-2"), while real Firestore nests them into the map.
+# Assertions below use the literal dotted key on purpose.
+
+
+@pytest.mark.asyncio
+async def test_new_chat_seeds_zero_unread_counts(fake_db: _FakeDB) -> None:
+    chat = await messages_service.get_or_create_chat("uid-1", "uid-2")
+    assert chat.unread_counts == {"uid-1": 0, "uid-2": 0}
+
+
+@pytest.mark.asyncio
+async def test_delivered_message_increments_recipient_unread(
+    fake_db: _FakeDB, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _seed_chat(fake_db)
+
+    async def fake_moderate(text: str) -> ModerationResult:
+        return ModerationResult(blocked=False, content_hash="h")
+
+    monkeypatch.setattr(messages_service, "moderate_text", fake_moderate)
+
+    await messages_service.send_message("uid-1_uid-2", "uid-1", "hello")
+    await messages_service.send_message("uid-1_uid-2", "uid-1", "again")
+
+    chat_doc = fake_db.chats["uid-1_uid-2"]
+    assert chat_doc["unread_counts.uid-2"] == 2
+    assert "unread_counts.uid-1" not in chat_doc  # sender's counter untouched
+
+
+@pytest.mark.asyncio
+async def test_pending_review_message_does_not_increment_unread(
+    fake_db: _FakeDB, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _seed_chat(fake_db)
+
+    async def fake_moderate(text: str) -> ModerationResult:
+        return ModerationResult(
+            blocked=True,
+            layer="keyword",
+            reason="keyword match: idiot",
+            matches=[Match(term="idiot", category="english_slurs", weight=0.5, start=0, end=5)],
+            content_hash="h",
+        )
+
+    monkeypatch.setattr(messages_service, "moderate_text", fake_moderate)
+
+    await messages_service.send_message(
+        "uid-1_uid-2", "uid-1", "idiot", submit_for_review=True
+    )
+
+    assert "unread_counts.uid-2" not in fake_db.chats["uid-1_uid-2"]
+
+
+@pytest.mark.asyncio
+async def test_mark_chat_read_resets_counter_and_stamps_read_at(
+    fake_db: _FakeDB,
+) -> None:
+    _seed_chat(fake_db)
+    now = datetime(2026, 5, 18, 12, 0, tzinfo=UTC)
+    _seed_message(fake_db, "uid-1_uid-2", "m1", now, sender_uid="uid-2")
+    _seed_message(fake_db, "uid-1_uid-2", "m2", now, sender_uid="uid-1")
+
+    await messages_service.mark_chat_read("uid-1_uid-2", "uid-1")
+
+    assert fake_db.chats["uid-1_uid-2"]["unread_counts.uid-1"] == 0
+    msgs = fake_db.messages_for("uid-1_uid-2")
+    assert msgs["m1"]["read_at"] is not None  # peer's message: read receipt
+    assert msgs["m2"]["read_at"] is None  # own message untouched
+
+
+@pytest.mark.asyncio
+async def test_mark_chat_read_requires_participant(fake_db: _FakeDB) -> None:
+    _seed_chat(fake_db)
+    with pytest.raises(messages_service.NotAuthorized):
+        await messages_service.mark_chat_read("uid-1_uid-2", "uid-outsider")
+
+
+# --------------------------------------------------------------------------
+# SEC-08: DM image moderation
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_message_image_rejected_when_vision_blocks(
+    fake_db: _FakeDB, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _seed_chat(fake_db)
+    now = datetime(2026, 5, 18, 12, 0, tzinfo=UTC)
+    _seed_message(fake_db, "uid-1_uid-2", "m1", now, sender_uid="uid-1")
+
+    async def fake_moderate_image(url: str) -> ModerationResult:
+        return ModerationResult(blocked=True, layer="vision", category="adult", content_hash="h")
+
+    monkeypatch.setattr(messages_service, "moderate_image", fake_moderate_image)
+
+    await messages_service._moderate_message_image(
+        "uid-1_uid-2", "m1", "https://storage.example/img.jpg"
+    )
+
+    stored = fake_db.messages_for("uid-1_uid-2")["m1"]
+    assert stored["status"] == "rejected"
+    assert "safety" in stored["rejection_reason"]
+
+
+@pytest.mark.asyncio
+async def test_message_image_untouched_when_vision_clean(
+    fake_db: _FakeDB, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _seed_chat(fake_db)
+    now = datetime(2026, 5, 18, 12, 0, tzinfo=UTC)
+    _seed_message(fake_db, "uid-1_uid-2", "m1", now, sender_uid="uid-1")
+
+    async def fake_moderate_image(url: str) -> ModerationResult:
+        return ModerationResult(blocked=False, content_hash="h")
+
+    monkeypatch.setattr(messages_service, "moderate_image", fake_moderate_image)
+
+    await messages_service._moderate_message_image(
+        "uid-1_uid-2", "m1", "https://storage.example/img.jpg"
+    )
+
+    assert "status" not in fake_db.messages_for("uid-1_uid-2")["m1"]
 
 
 @pytest.mark.asyncio

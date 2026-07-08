@@ -62,6 +62,32 @@ class Settings(BaseSettings):
         default=None,
         description="Storage bucket. Defaults to {gcp_project_id}.firebasestorage.app.",
     )
+    rate_limit_enabled: bool | None = Field(
+        default=None,
+        description=(
+            "Force rate limiting on (true) or off (false). Unset: enabled in "
+            "every environment except development, so local dev and the test "
+            "suite are never throttled."
+        ),
+    )
+    # ---- Moderation tuning (HC-05 / HC-06) --------------------------------
+    openai_moderation_model: str = Field(
+        default="omni-moderation-latest",
+        description="OpenAI moderation model identifier.",
+    )
+    openai_timeout_seconds: float = Field(
+        default=3.0, gt=0, description="OpenAI moderation request timeout."
+    )
+    tfidf_flag_threshold: float = Field(
+        default=0.55,
+        ge=0.0,
+        le=1.0,
+        description=(
+            "Layer-2 TF-IDF toxicity probability at/above which text is "
+            "flagged. Clean text scores ~0.35 and clearly toxic phrasing "
+            "~0.6+ on the current seed model."
+        ),
+    )
 
     @field_validator("firebase_admin_key_path")
     @classmethod
@@ -106,6 +132,13 @@ class Settings(BaseSettings):
     @property
     def is_production(self) -> bool:
         return self.environment == "production"
+
+    @property
+    def rate_limit_effective(self) -> bool:
+        """Rate limiting on/off after applying the environment default."""
+        if self.rate_limit_enabled is not None:
+            return self.rate_limit_enabled
+        return self.environment != "development"
 
 
 @lru_cache(maxsize=1)

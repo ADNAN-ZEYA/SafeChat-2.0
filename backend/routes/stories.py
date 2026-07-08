@@ -51,25 +51,40 @@ async def create_story(
     payload: CreateStoryRequest,
     claims: dict[str, Any] = Depends(get_current_user_claims),
 ) -> JSONResponse:
-    """Create a new story. Text (if present) is run through content moderation."""
+    """Create a new story. Text (if present) is run through content moderation.
+
+    Responds 201 (approved), 202 (flagged + submitted for human review), or
+    422 MODERATION_FLAGGED with match spans — the same contract as posts,
+    comments, and messages (API-04).
+    """
     try:
         story = await stories_service.create_story(
             author_uid=claims["uid"],
             image_url=payload.image_url,
             text=payload.text,
+            submit_for_review=payload.submit_for_review,
         )
     except stories_service.StoryBlocked as exc:
-        raise HTTPException(
+        return JSONResponse(
             status_code=422,
-            detail={
-                "code": "MODERATION_BLOCKED",
-                "message": "Story was blocked by content moderation.",
-                "field": "text",
+            content={
+                "error": {
+                    "code": "MODERATION_FLAGGED",
+                    "message": (
+                        "This story can't be uploaded as-is. Edit it, or submit "
+                        "it for human verification."
+                    ),
+                    "field": "text",
+                    "matches": [m.model_dump(mode="json") for m in exc.matches],
+                    "reason": exc.reason,
+                },
+                "meta": _meta(),
             },
-        ) from exc
+        )
 
+    status_code = 202 if story.status == "pending_review" else 201
     return JSONResponse(
-        status_code=201,
+        status_code=status_code,
         content={"data": {"story": story.model_dump(mode="json")}, "meta": _meta()},
     )
 

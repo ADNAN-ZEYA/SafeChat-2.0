@@ -16,7 +16,10 @@ class Story(BaseModel):
     author_uid: str
     image_url: str
     text: str | None = None
-    status: Literal["approved", "rejected", "pending"] = "approved"
+    # "pending" is a legacy value kept for pre-existing documents; new code
+    # writes "pending_review" (same vocabulary as posts/comments/messages).
+    status: Literal["approved", "rejected", "pending", "pending_review"] = "approved"
+    rejection_reason: str | None = None
     view_count: int = 0
     created_at: datetime
     expires_at: datetime
@@ -26,3 +29,6 @@ class Story(BaseModel):
 class CreateStoryRequest(BaseModel):
     image_url: str
     text: str | None = Field(None, max_length=200)
+    # When True, flagged text is saved as pending_review for human
+    # verification instead of hard-failing (API-04 — same flow as posts).
+    submit_for_review: bool = False

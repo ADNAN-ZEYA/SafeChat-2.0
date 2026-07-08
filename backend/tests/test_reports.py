@@ -323,3 +323,73 @@ def test_post_reports_reason_too_short_returns_400(
     body = response.json()
     assert body["error"]["code"] == "INVALID_INPUT"
     assert body["error"]["field"] == "reason"
+
+
+def test_resolve_report_requires_admin(client: TestClient) -> None:
+    _override_claims({"uid": "uid-1", "admin": False})
+    response = client.post(
+        "/api/v1/reports/report-1/resolve",
+        json={"action": "dismiss", "notes": "n/a"},
+    )
+    assert response.status_code == 403
+    assert response.json()["error"]["code"] == "FORBIDDEN"
+
+
+def test_resolve_report_records_decision_for_admin(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async def fake_admin_claims() -> dict[str, Any]:
+        return {"uid": "admin-1", "admin": True}
+
+    app.dependency_overrides[require_admin] = fake_admin_claims
+
+    async def fake_resolve(
+        report_id: str, admin_uid: str, action: str, notes: str
+    ) -> Report:
+        return Report(
+            id=report_id,
+            reporter_uid="uid-1",
+            target_type="post",
+            target_id="post-1",
+            reason="This post contains harmful content.",
+            status="dismissed" if action == "dismiss" else "reviewed",
+            resolution_action=action,  # type: ignore[arg-type]
+            resolution_notes=notes,
+            resolved_by=admin_uid,
+            created_at=datetime(2026, 5, 18, tzinfo=timezone.utc),
+        )
+
+    monkeypatch.setattr(reports_service, "resolve_report", fake_resolve)
+
+    response = client.post(
+        "/api/v1/reports/report-1/resolve",
+        json={"action": "block_content", "notes": "removed"},
+    )
+
+    assert response.status_code == 200
+    report = response.json()["data"]["report"]
+    assert report["status"] == "reviewed"
+    assert report["resolution_action"] == "block_content"
+    assert report["resolved_by"] == "admin-1"
+
+
+def test_resolve_report_missing_returns_404(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async def fake_admin_claims() -> dict[str, Any]:
+        return {"uid": "admin-1", "admin": True}
+
+    app.dependency_overrides[require_admin] = fake_admin_claims
+
+    async def fake_resolve(*args: Any, **kwargs: Any) -> Report:
+        raise reports_service.ReportNotFound("report-x")
+
+    monkeypatch.setattr(reports_service, "resolve_report", fake_resolve)
+
+    response = client.post(
+        "/api/v1/reports/report-x/resolve",
+        json={"action": "dismiss", "notes": ""},
+    )
+
+    assert response.status_code == 404
+    assert response.json()["error"]["code"] == "NOT_FOUND"

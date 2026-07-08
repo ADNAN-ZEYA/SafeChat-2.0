@@ -25,6 +25,36 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
     super.dispose();
   }
 
+  /// Sends a Firebase password-reset email to the address in the email field
+  /// (CQ-09). Response is intentionally the same whether or not the address is
+  /// registered, to avoid account enumeration.
+  Future<void> _handleForgotPassword() async {
+    final email = _emailController.text.trim();
+    final messenger = ScaffoldMessenger.of(context);
+    if (email.isEmpty) {
+      messenger.showSnackBar(
+        const SnackBar(
+          content: Text('Enter your email above, then tap "Forgot Password?".'),
+        ),
+      );
+      return;
+    }
+    try {
+      await ref.read(authRepositoryProvider).sendPasswordResetEmail(email);
+      messenger.showSnackBar(
+        const SnackBar(
+          content: Text(
+            'If an account exists for that email, a reset link has been sent.',
+          ),
+        ),
+      );
+    } catch (e) {
+      messenger.showSnackBar(
+        SnackBar(content: Text(e.toString().replaceFirst('Exception: ', ''))),
+      );
+    }
+  }
+
   Future<void> _handleLogin() async {
     if (_formKey.currentState?.validate() ?? false) {
       final email = _emailController.text.trim();
@@ -156,9 +186,7 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
                           Align(
                             alignment: Alignment.centerRight,
                             child: TextButton(
-                              onPressed: () {
-                                // TODO: Navigate to forgot password screen
-                              },
+                              onPressed: _handleForgotPassword,
                               child: const Text('Forgot Password?'),
                             ),
                           ),

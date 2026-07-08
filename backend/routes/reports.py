@@ -11,7 +11,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import JSONResponse
 
 from middleware.auth import get_current_user_claims, require_admin
-from models.report import CreateReportRequest
+from models.report import CreateReportRequest, ResolveReportRequest
 from services import reports as reports_service
 
 router = APIRouter(prefix="/reports", tags=["reports"])
@@ -71,4 +71,29 @@ async def list_reports(
             "data": {"reports": [r.model_dump(mode="json") for r in reports]},
             "meta": _meta(),
         }
+    )
+
+
+@router.post("/{report_id}/resolve")
+async def resolve_report(
+    report_id: str,
+    payload: ResolveReportRequest,
+    admin_claims: dict[str, Any] = Depends(require_admin),
+) -> JSONResponse:
+    """Resolve a report (admin only). API-08 / contract §11."""
+    try:
+        report = await reports_service.resolve_report(
+            report_id=report_id,
+            admin_uid=admin_claims["uid"],
+            action=payload.action,
+            notes=payload.notes,
+        )
+    except reports_service.ReportNotFound as exc:
+        raise HTTPException(
+            status_code=404,
+            detail={"code": "NOT_FOUND", "message": f"Report '{report_id}' not found."},
+        ) from exc
+
+    return JSONResponse(
+        content={"data": {"report": report.model_dump(mode="json")}, "meta": _meta()}
     )

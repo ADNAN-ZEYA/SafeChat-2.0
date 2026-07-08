@@ -81,20 +81,17 @@ async def get_blocked_users(
     return JSONResponse(content={"data": results, "meta": _meta()})
 
 
-@router.patch("/me")
-async def update_me(
-    payload: UpdateProfileRequest,
-    claims: dict[str, Any] = Depends(get_current_user_claims),
-) -> JSONResponse:
-    """Update the authenticated user's own profile.
+async def apply_profile_update(uid: str, payload: UpdateProfileRequest) -> dict[str, Any]:
+    """Canonical profile-update implementation (API-02).
 
-    `display_name` and `bio`, when present, are run through the moderation
-    cascade before persisting. A blocked value yields 422 MODERATION_BLOCKED.
+    Shared by PATCH /users/me and PATCH /auth/profile so the two routes can
+    never drift again (they previously diverged on both moderation and URL
+    signing). Moderates user-visible free text, applies the update, and
+    returns the profile dict with freshly signed media URLs.
     """
-    uid = claims["uid"]
     fields = payload.model_dump(exclude_unset=True)
 
-    for field_name in ("display_name", "bio"):
+    for field_name in ("display_name", "bio", "username"):
         value = fields.get(field_name)
         if isinstance(value, str) and value.strip():
             result = await moderate_text(value)
@@ -121,10 +118,46 @@ async def update_me(
                 "message": "Profile not found. Complete onboarding first.",
             },
         ) from exc
+    except users_service.UsernameTaken as exc:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "USERNAME_TAKEN",
+                "message": "Username is already taken.",
+                "field": "username",
+            },
+        ) from exc
+    except ValueError as exc:
+        # e.g. the 30-day username-change cooldown — previously bubbled to 500.
+        raise HTTPException(
+            status_code=400,
+            detail={"code": "INVALID_INPUT", "message": str(exc), "field": "username"},
+        ) from exc
 
+    profile_dict: dict[str, Any] = profile.model_dump(mode="json")
+    if profile_dict.get("photo_url"):
+        profile_dict["photo_url"] = storage_service.sign_media_url(profile_dict["photo_url"])
+    if profile_dict.get("background_url"):
+        profile_dict["background_url"] = storage_service.sign_media_url(
+            profile_dict["background_url"]
+        )
+    return profile_dict
+
+
+@router.patch("/me")
+async def update_me(
+    payload: UpdateProfileRequest,
+    claims: dict[str, Any] = Depends(get_current_user_claims),
+) -> JSONResponse:
+    """Update the authenticated user's own profile.
+
+    Free-text fields run through the moderation cascade before persisting.
+    A blocked value yields 422 MODERATION_BLOCKED.
+    """
+    profile_dict = await apply_profile_update(claims["uid"], payload)
     return JSONResponse(
         content={
-            "data": {"profile": profile.model_dump(mode="json")},
+            "data": {"profile": profile_dict},
             "meta": _meta(),
         }
     )

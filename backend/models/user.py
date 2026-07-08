@@ -39,6 +39,22 @@ class UpdateProfileRequest(BaseModel):
     display_name: str | None = Field(default=None, min_length=1, max_length=50)
     username: str | None = Field(default=None, min_length=3, max_length=30)
     bio: str | None = Field(default=None, max_length=200)
+
+    @field_validator("username")
+    @classmethod
+    def _validate_username(cls, value: str | None) -> str | None:
+        """Same charset rule as onboarding (CQ-05) — without this, profile
+        updates could set usernames with uppercase/spaces/symbols, breaking
+        the lowercase prefix-search and /usernames uniqueness assumptions."""
+        if value is None:
+            return value
+        normalised = value.strip().lower()
+        if not USERNAME_PATTERN.match(normalised):
+            raise ValueError(
+                "Username must be 3-30 characters: lowercase letters, "
+                "digits, and underscores only."
+            )
+        return normalised
     photo_url: str | None = None
     background_url: str | None = None
     private_account: bool | None = None

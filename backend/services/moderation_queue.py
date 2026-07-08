@@ -132,3 +132,64 @@ async def mark_resolved(
         "resolved_by": resolver_uid,
     }
     await asyncio.to_thread(queue_ref(queue_id).update, updates)
+
+
+class AlreadyClaimed(Exception):
+    """Raised when a reviewer tries to claim a queue item that is no longer
+    pending_review — i.e. another admin resolved it first (CQ-02)."""
+
+
+async def claim_pending(
+    queue_id: str, status: QueueStatus, resolver_uid: str, reason: str | None = None
+) -> ModerationQueueItem:
+    """Atomically transition a queue item pending_review -> terminal status.
+
+    Runs check-and-set inside a Firestore transaction so two admins acting on
+    the same item can never both win: exactly one claim succeeds, the other
+    raises AlreadyClaimed.
+
+    Returns the item as it was BEFORE the claim (the caller needs its
+    content_type/content_id to apply the decision to the content doc).
+
+    Raises:
+        QueueItemNotFound: if the queue document does not exist.
+        AlreadyClaimed: if the item is not in pending_review status.
+    """
+    ref = queue_ref(queue_id)
+
+    def _txn_claim() -> ModerationQueueItem:
+        @firestore.transactional
+        def _claim(transaction: firestore.Transaction) -> ModerationQueueItem:
+            snap = ref.get(transaction=transaction)
+            if not snap.exists:
+                raise QueueItemNotFound(queue_id)
+            item = ModerationQueueItem.model_validate(snap.to_dict())
+            if item.status != "pending_review":
+                raise AlreadyClaimed(queue_id)
+            transaction.update(
+                ref,
+                {
+                    "status": status,
+                    "reason": reason,
+                    "resolved_at": firestore.SERVER_TIMESTAMP,
+                    "resolved_by": resolver_uid,
+                },
+            )
+            return item
+
+        return _claim(db.transaction())
+
+    return await asyncio.to_thread(_txn_claim)
+
+
+async def release_claim(queue_id: str) -> None:
+    """Return a claimed item to pending_review (compensation for a failed
+    content update after a successful claim — see moderation_review._decide).
+    """
+    updates: dict[str, Any] = {
+        "status": "pending_review",
+        "reason": None,
+        "resolved_at": None,
+        "resolved_by": None,
+    }
+    await asyncio.to_thread(queue_ref(queue_id).update, updates)

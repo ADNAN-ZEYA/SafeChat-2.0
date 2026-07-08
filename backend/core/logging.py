@@ -1,0 +1,58 @@
+# backend/core/logging.py
+"""Request-ID log correlation (PR-03).
+
+Every request gets an id (reused from an inbound X-Request-ID header when
+present, else generated). It is stored in a contextvar, echoed back in the
+X-Request-ID response header, and injected into every log record emitted
+while handling the request via a logging filter — so Cloud Logging lines can
+be traced back to a single request.
+"""
+
+from __future__ import annotations
+
+import contextvars
+import logging
+import uuid
+
+_request_id_ctx: contextvars.ContextVar[str] = contextvars.ContextVar(
+    "request_id", default="-"
+)
+
+
+def get_request_id() -> str:
+    return _request_id_ctx.get()
+
+
+def set_request_id(request_id: str) -> contextvars.Token[str]:
+    return _request_id_ctx.set(request_id)
+
+
+def reset_request_id(token: contextvars.Token[str]) -> None:
+    _request_id_ctx.reset(token)
+
+
+def new_request_id() -> str:
+    return uuid.uuid4().hex
+
+
+class RequestIdFilter(logging.Filter):
+    """Attaches the current request id to every record as ``%(request_id)s``."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        record.request_id = get_request_id()
+        return True
+
+
+def configure_logging(level: str) -> None:
+    """Configure root logging to include the request id in each line."""
+    handler = logging.StreamHandler()
+    handler.addFilter(RequestIdFilter())
+    handler.setFormatter(
+        logging.Formatter(
+            "%(asctime)s %(levelname)s [%(request_id)s] %(name)s: %(message)s"
+        )
+    )
+    root = logging.getLogger()
+    root.handlers.clear()
+    root.addHandler(handler)
+    root.setLevel(level.upper())

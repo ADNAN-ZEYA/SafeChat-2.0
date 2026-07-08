@@ -20,8 +20,6 @@ from models.moderation import OpenAIVerdict
 logger = logging.getLogger(__name__)
 
 OPENAI_MODERATION_URL = "https://api.openai.com/v1/moderations"
-OPENAI_MODEL = "omni-moderation-latest"
-_TIMEOUT_SECONDS = 3.0
 
 # Block when category_scores[category] >= threshold. Each value tuned per
 # severity — sexual/minors is near-zero by design.
@@ -43,7 +41,9 @@ async def _post_moderation(
     *, api_key: str, payload: dict[str, Any]
 ) -> httpx.Response:
     """Thin wrapper around the HTTP POST so tests can patch a single seam."""
-    async with httpx.AsyncClient(timeout=_TIMEOUT_SECONDS) as client:
+    async with httpx.AsyncClient(
+        timeout=get_settings().openai_timeout_seconds
+    ) as client:
         return await client.post(
             OPENAI_MODERATION_URL,
             headers={
@@ -68,13 +68,15 @@ async def check_with_openai(text: str) -> OpenAIVerdict:
     if not text or not text.strip():
         return OpenAIVerdict(blocked=False)
 
-    payload = {"model": OPENAI_MODEL, "input": text}
+    payload = {"model": settings.openai_moderation_model, "input": text}
     try:
         response = await _post_moderation(
             api_key=settings.openai_api_key, payload=payload
         )
     except httpx.TimeoutException:
-        logger.warning("OpenAI moderation timed out (%.1fs)", _TIMEOUT_SECONDS)
+        logger.warning(
+            "OpenAI moderation timed out (%.1fs)", get_settings().openai_timeout_seconds
+        )
         return OpenAIVerdict(blocked=False, error=True)
     except httpx.HTTPError as exc:
         logger.warning("OpenAI moderation HTTP error: %s", exc)

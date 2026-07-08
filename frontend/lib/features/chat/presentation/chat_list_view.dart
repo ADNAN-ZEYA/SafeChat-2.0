@@ -5,6 +5,22 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'chat_detail_view.dart';
 import '../../profile/presentation/follow_providers.dart';
 
+/// Cached peer profile lookups for the chat list (CQ-04).
+///
+/// The previous per-row FutureBuilder issued one Firestore `get()` per chat
+/// row on EVERY stream tick (N+1 reads, re-fired constantly). A family
+/// FutureProvider caches each uid's profile for the session: one read per
+/// distinct peer, shared across rebuilds. Names/avatars changing mid-session
+/// is acceptable staleness for a chat list.
+final chatPeerProfileProvider =
+    FutureProvider.family<Map<String, dynamic>?, String>((ref, uid) async {
+      final doc = await FirebaseFirestore.instance
+          .collection('users')
+          .doc(uid)
+          .get();
+      return doc.data();
+    });
+
 class ChatListView extends ConsumerStatefulWidget {
   const ChatListView({super.key});
 
@@ -127,24 +143,25 @@ class _ChatListViewState extends ConsumerState<ChatListView>
                 final otherUid = participants.isNotEmpty
                     ? participants.first
                     : '';
-                final lastMessage = data['last_message'] as String? ?? '';
-                final unreadCount = data['unread_count']?[uid] ?? 0;
+                // Field names match what the backend writes to the chat doc
+                // (services/messages.py): last_message_text + unread_counts.
+                final lastMessage = data['last_message_text'] as String? ?? '';
+                final unreadCount =
+                    (data['unread_counts'] as Map<String, dynamic>?)?[uid]
+                        as int? ??
+                    0;
 
-                return FutureBuilder<DocumentSnapshot>(
-                  future: FirebaseFirestore.instance
-                      .collection('users')
-                      .doc(otherUid)
-                      .get(),
-                  builder: (context, userSnap) {
-                    if (!userSnap.hasData) {
-                      return const ListTile(title: Text('Loading...'));
-                    }
-                    final userData =
-                        userSnap.data!.data() as Map<String, dynamic>?;
+                final peerAsync = ref.watch(chatPeerProfileProvider(otherUid));
+                return peerAsync.when(
+                  loading: () => const ListTile(title: Text('Loading...')),
+                  error: (_, _) => const SizedBox(),
+                  data: (userData) {
                     if (userData == null) return const SizedBox();
 
                     final displayName = userData['display_name'] ?? 'User';
-                    final photoUrl = userData['author_photo_url'];
+                    // Users store their avatar as photo_url (author_photo_url
+                    // only exists as a denormalized field on posts).
+                    final photoUrl = userData['photo_url'];
 
                     return ListTile(
                       leading: CircleAvatar(

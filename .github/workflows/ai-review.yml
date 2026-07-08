@@ -152,7 +152,7 @@ jobs:
         continue-on-error: true
         working-directory: ${{ steps.detect.outputs.python_dir }}
         env:
-          GCP_PROJECT_ID: safechat-prod-66143
+          GCP_PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
           FIREBASE_ADMIN_KEY_PATH: ${{ github.workspace }}/ci-firebase-key.json
           FIREBASE_ADMIN_SDK_KEY: ${{ secrets.FIREBASE_ADMIN_SDK_KEY }}
         run: |

@@ -9,11 +9,18 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, Response
 from fastapi.responses import JSONResponse
+from pydantic import BaseModel, Field
 
 from middleware.auth import get_current_user_claims
 from services import notifications as notifications_service
 
 router = APIRouter(prefix="/notifications", tags=["notifications"])
+
+
+class MarkReadRequest(BaseModel):
+    """Body for POST /notifications/read (API_CONTRACTS.md §9)."""
+
+    ids: list[str] = Field(default_factory=list, max_length=500)
 
 
 def _meta() -> dict[str, str]:
@@ -41,6 +48,16 @@ async def mark_read(
 ) -> Response:
     """Mark a specific notification as read."""
     await notifications_service.mark_as_read(claims["uid"], notification_id)
+    return Response(status_code=204)
+
+
+@router.post("/read", status_code=204)
+async def mark_read_batch(
+    payload: MarkReadRequest,
+    claims: dict[str, Any] = Depends(get_current_user_claims),
+) -> Response:
+    """Mark the given notification ids as read (API-07, contract §9)."""
+    await notifications_service.mark_many_as_read(claims["uid"], payload.ids)
     return Response(status_code=204)
 
 

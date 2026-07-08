@@ -25,17 +25,32 @@ _CONTENT_TYPE_TO_EXT: dict[str, str] = {
     "image/jpeg": "jpg",
     "image/png": "png",
     "image/webp": "webp",
+    "video/mp4": "mp4",
 }
+
+# Contract size caps (docs/API_CONTRACTS.md §8): 10 MB images, 100 MB videos.
+MAX_IMAGE_BYTES = 10 * 1024 * 1024
+MAX_VIDEO_BYTES = 100 * 1024 * 1024
 
 
 class InvalidContentType(Exception):
     """Raised when an unsupported content type is requested."""
 
 
+class FileTooLarge(Exception):
+    """Raised when the declared size_bytes exceeds the cap for its media type."""
+
+    def __init__(self, size_bytes: int, cap: int) -> None:
+        self.size_bytes = size_bytes
+        self.cap = cap
+        super().__init__(f"{size_bytes} bytes exceeds the {cap}-byte limit.")
+
+
 def generate_upload_url(
     uid: str,
     content_type: str,
     purpose: str,
+    size_bytes: int | None = None,
 ) -> UploadUrlResponse:
     """Generate a signed GCS upload URL for the given user, content type, and purpose.
 
@@ -46,15 +61,23 @@ def generate_upload_url(
 
     Args:
         uid: The authenticated user's UID.
-        content_type: MIME type — must be image/jpeg, image/png, or image/webp.
-        purpose: Intended use — "post", "story", or "avatar".
+        content_type: MIME type — image/jpeg, image/png, image/webp, or video/mp4.
+        purpose: Intended use — "post", "story", "avatar", "background", or "message".
+        size_bytes: Declared upload size; validated against the contract caps
+            (10 MB images / 100 MB videos) when provided.
 
     Raises:
         InvalidContentType: if content_type is not one of the allowed values.
+        FileTooLarge: if size_bytes exceeds the cap for the media type.
     """
     ext = _CONTENT_TYPE_TO_EXT.get(content_type)
     if ext is None:
         raise InvalidContentType(content_type)
+
+    if size_bytes is not None:
+        cap = MAX_VIDEO_BYTES if content_type.startswith("video/") else MAX_IMAGE_BYTES
+        if size_bytes > cap:
+            raise FileTooLarge(size_bytes, cap)
 
     object_path = f"uploads/{purpose}/{uid}/{uuid.uuid4()}.{ext}"
     expiration = timedelta(minutes=SIGNED_URL_TTL_MINUTES)

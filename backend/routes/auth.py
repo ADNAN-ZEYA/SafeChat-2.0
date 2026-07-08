@@ -15,6 +15,8 @@ from core.firebase import db
 from middleware.auth import get_current_user_claims
 from models.auth import CurrentUser
 from models.user import OnboardRequest, UpdateProfileRequest
+from moderation.engine import moderate_text
+from routes.users import apply_profile_update
 from services import storage as storage_service
 from services import users as users_service
 
@@ -88,12 +90,33 @@ async def onboard(
     """Create the authenticated user's profile and reserve their username.
 
     The username and user-profile docs are created in a single Firestore
-    transaction. Validation here is structural only; content moderation of
-    `username`, `display_name`, and `bio` is added in Phase 2.
+    transaction. `username`, `display_name`, and `bio` run through the
+    moderation cascade first (SEC-07) — profile fields are the first content
+    other users ever see.
     """
     uid = claims["uid"]
     email = claims.get("email")
     photo_url = claims.get("picture") # Extracted from Google Auth
+
+    for field_name, value in (
+        ("username", payload.username),
+        ("display_name", payload.display_name),
+        ("bio", payload.bio),
+    ):
+        if value and value.strip():
+            result = await moderate_text(value)
+            if result.blocked:
+                raise HTTPException(
+                    status_code=422,
+                    detail={
+                        "code": "MODERATION_BLOCKED",
+                        "message": (
+                            f"The submitted {field_name.replace('_', ' ')} "
+                            "was blocked by content moderation."
+                        ),
+                        "field": field_name,
+                    },
+                )
 
     try:
         profile = await users_service.reserve_username(
@@ -146,32 +169,15 @@ async def update_profile(
     payload: UpdateProfileRequest,
     claims: dict[str, Any] = Depends(get_current_user_claims),
 ) -> JSONResponse:
-    """Update the authenticated user's profile."""
-    uid = claims["uid"]
-    fields = payload.model_dump(exclude_unset=True)
-    
-    try:
-        profile = await users_service.update_profile(uid, fields)
-    except users_service.ProfileNotFound:
-        raise HTTPException(status_code=404, detail="Profile not found")
-    except users_service.UsernameTaken as exc:
-        raise HTTPException(
-            status_code=409,
-            detail={
-                "code": "USERNAME_TAKEN",
-                "message": f"Username is already taken.",
-                "field": "username",
-            },
-        ) from exc
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
+    """Update the authenticated user's profile.
 
-    profile_dict = profile.model_dump(mode="json")
-    if profile_dict.get("photo_url"):
-        profile_dict["photo_url"] = storage_service.sign_media_url(profile_dict["photo_url"])
-    if profile_dict.get("background_url"):
-        profile_dict["background_url"] = storage_service.sign_media_url(profile_dict["background_url"])
-
+    API-02: thin alias for PATCH /users/me, kept because the Flutter client
+    calls this path (e.g. encryption_service.dart publishes `public_key`
+    here). Both routes share ONE implementation — apply_profile_update in
+    routes/users.py — so moderation and URL-signing behavior can never
+    drift between them again.
+    """
+    profile_dict = await apply_profile_update(claims["uid"], payload)
     return JSONResponse(
         status_code=200,
         content={

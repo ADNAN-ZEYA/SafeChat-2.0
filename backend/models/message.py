@@ -40,6 +40,9 @@ class Chat(BaseModel):
     participants: list[str]
     last_message_text: str | None = None
     last_message_at: datetime | None = None
+    # Per-participant unread badge counters: {uid: count}. Incremented when a
+    # message is DELIVERED to that uid; reset via POST /chats/{id}/read.
+    unread_counts: dict[str, int] = Field(default_factory=dict)
     # "pending" = SafeChat Mode ON (unencrypted, moderated).
     # "trusted" = SafeChat Mode OFF (E2E encrypted, unmoderated).
     encryption_mode: Literal["pending", "trusted"] = "pending"

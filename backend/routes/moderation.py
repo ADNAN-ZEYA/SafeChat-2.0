@@ -11,7 +11,6 @@ from fastapi import APIRouter, Depends
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
-from core.firebase import db
 from middleware.auth import get_current_user_claims
 from moderation.engine import moderate_text
 from services import moderation_queue
@@ -74,55 +73,13 @@ async def analyze_content(
     )
 
 
-class AppealRequest(BaseModel):
-    reason: str = Field(..., max_length=500)
-    content_type: str = Field(default="post")  # 'post', 'comment', 'message'
-
-
-@router.post("/appeals/{content_id}")
-async def submit_appeal(
-    content_id: str,
-    payload: AppealRequest,
-    claims: dict[str, Any] = Depends(get_current_user_claims),
-) -> JSONResponse:
-    """Submit an appeal for blocked content to be reviewed by humans."""
-    uid = claims["uid"]
-
-    appeal_ref = db.collection("appeals").document()
-
-    appeal_data = {
-        "id": appeal_ref.id,
-        "content_id": content_id,
-        "content_type": payload.content_type,
-        "author_uid": uid,
-        "reason": payload.reason,
-        "status": "pending",
-        "created_at": datetime.now(UTC),
-    }
-
-    appeal_ref.set(appeal_data)
-
-    # Update the original content to show it's under review
-    # This depends on the content_type
-    try:
-        if payload.content_type == "post":
-            db.collection("posts").document(content_id).update({"status": "pending_review"})
-        elif payload.content_type == "comment":
-            # Finding the comment requires a group query or knowing the post_id
-            # Assuming comments are top-level or have a known path,
-            # or for simplicity here we just use 'comments' collection if it exists
-            # Wait, DATABASE_SCHEMA says posts/{postId}/comments/{commentId}
-            pass  # We'd need the post ID. For now we will support posts primarily.
-    except Exception:
-        # Ignore if document doesn't exist
-        pass
-
-    return JSONResponse(
-        content={
-            "data": appeal_data,
-            "meta": _meta(),
-        }
-    )
+# NOTE (SEC-01): the former POST /moderation/appeals/{content_id} endpoint was
+# removed. It let any authenticated user flip any post to pending_review (an
+# IDOR that unpublished other users' content) and wrote to an orphan `appeals`
+# collection that no admin surface reads. Human verification is served entirely
+# by the submit_for_review flow on POST /posts, /posts/{id}/comments, and
+# /chats/{id}/messages, which enqueues into `moderation_queue` — the single
+# source of truth the admin portal and GET /moderation/appeals read.
 
 
 @router.get("/appeals")

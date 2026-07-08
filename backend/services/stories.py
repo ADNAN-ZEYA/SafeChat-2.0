@@ -18,9 +18,12 @@ from google.cloud import firestore
 from google.cloud.firestore import DocumentReference, FieldFilter
 
 from core.firebase import db
+from models.moderation import Match
 from models.story import Story
 from moderation.engine import moderate_text
 from services import follows as follows_service
+from services import moderation_queue
+from services import users as users_service
 
 STORIES_COLLECTION = "stories"
 VIEWS_SUBCOLLECTION = "views"
@@ -28,13 +31,22 @@ STORY_TTL_HOURS = 24
 
 
 class StoryBlocked(Exception):
-    """Raised when story text is rejected by the moderation cascade."""
+    """Raised when story text is flagged and the author has not opted into
+    human verification. Carries match spans for client-side highlighting
+    (API-04 — same contract as PostBlocked / MessageBlocked).
+    """
 
     def __init__(
-        self, layer: str | None = None, reason: str | None = None
+        self,
+        layer: str | None = None,
+        reason: str | None = None,
+        matches: list[Match] | None = None,
+        categories: list[str] | None = None,
     ) -> None:
         self.layer = layer
         self.reason = reason
+        self.matches = matches or []
+        self.categories = categories or []
         super().__init__(reason or "Story blocked by content moderation.")
 
 
@@ -63,18 +75,36 @@ async def create_story(
     author_uid: str,
     image_url: str,
     text: str | None = None,
+    submit_for_review: bool = False,
 ) -> Story:
     """Create a new story. Text (if present) is run through content moderation.
 
     expires_at is set to exactly STORY_TTL_HOURS after created_at.
 
+    API-04 — same human-verification contract as posts/comments/messages:
+    - Clean -> status "approved", visible in followers' story feeds.
+    - Flagged + submit_for_review=False -> raises ``StoryBlocked`` (route
+      returns 422 MODERATION_FLAGGED with the match spans).
+    - Flagged + submit_for_review=True -> status "pending_review" plus a
+      moderation_queue record in the same batch; hidden from feeds until an
+      admin approves.
+
     Raises:
-        StoryBlocked: if text is present and rejected by the moderation cascade.
+        StoryBlocked: flagged text when the author has not opted into review.
     """
+    result = None
     if text:
         result = await moderate_text(text)
-        if result.blocked:
-            raise StoryBlocked(layer=result.layer, reason=result.reason)
+        if result.blocked and not submit_for_review:
+            raise StoryBlocked(
+                layer=result.layer,
+                reason=result.reason,
+                matches=result.matches,
+                categories=[m.category for m in result.matches],
+            )
+
+    is_pending = bool(result and result.blocked)
+    initial_status = "pending_review" if is_pending else "approved"
 
     story_id = str(uuid.uuid4())
     now_dt = datetime.now(timezone.utc)
@@ -83,18 +113,60 @@ async def create_story(
         "author_uid": author_uid,
         "image_url": image_url,
         "text": text,
-        "status": "approved",
+        "status": initial_status,
         "view_count": 0,
         "created_at": now_dt,
         "expires_at": now_dt + timedelta(hours=STORY_TTL_HOURS),
         "schema_version": 1,
     }
 
+    queue_item: tuple[str, dict[str, Any]] | None = None
+    if is_pending and result is not None and text is not None:
+        user = await users_service.get_user_profile(author_uid)
+        queue_item = moderation_queue.build_item(
+            content_type="story",
+            content_id=story_id,
+            author_uid=author_uid,
+            author_username=user.username if user else "unknown",
+            text=text,
+            result=result,
+        )
+
     def _write() -> None:
-        db.collection(STORIES_COLLECTION).document(story_id).set(story_data)
+        batch = db.batch()
+        batch.set(db.collection(STORIES_COLLECTION).document(story_id), story_data)
+        if queue_item is not None:
+            qid, qpayload = queue_item
+            batch.set(db.collection(moderation_queue.QUEUE_COLLECTION).document(qid), qpayload)
+        batch.commit()
 
     await asyncio.to_thread(_write)
     return Story.model_validate(story_data)
+
+
+async def set_story_status(story_id: str, status: str, reason: str | None = None) -> Story:
+    """Apply an admin moderation decision to a pending story (API-04).
+
+    - "approved": the story becomes visible in followers' feeds (subject to
+      its unchanged 24h expiry — a story approved after expiry simply never
+      surfaces).
+    - "rejected": stays hidden; ``rejection_reason`` is recorded for the
+      author's Appeals view.
+
+    Raises:
+        StoryNotFound: if the story does not exist.
+    """
+    snap = await asyncio.to_thread(_story_ref(story_id).get)
+    if not snap.exists:
+        raise StoryNotFound(story_id)
+
+    updates: dict[str, Any] = {"status": status}
+    if status == "rejected":
+        updates["rejection_reason"] = reason
+
+    await asyncio.to_thread(_story_ref(story_id).update, updates)
+    snap2 = await asyncio.to_thread(_story_ref(story_id).get)
+    return Story.model_validate(snap2.to_dict())
 
 
 async def get_story(story_id: str) -> Story | None:

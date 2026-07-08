@@ -96,7 +96,7 @@ async def test_tfidf_block_when_lexicon_clean(
 async def test_tfidf_below_threshold_does_not_block(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    below = engine.TFIDF_FLAG_THRESHOLD - 0.01
+    below = engine.get_settings().tfidf_flag_threshold - 0.01
     monkeypatch.setattr(engine.tfidf_model, "score", lambda text: below)
 
     result = await moderate_text("mildly spicy but fine")
