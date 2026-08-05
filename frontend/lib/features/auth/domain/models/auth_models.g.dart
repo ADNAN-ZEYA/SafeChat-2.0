@@ -15,6 +15,7 @@ UserProfile _$UserProfileFromJson(Map<String, dynamic> json) => UserProfile(
   bio: json['bio'] as String?,
   photoUrl: json['photo_url'] as String?,
   backgroundUrl: json['background_url'] as String?,
+  safechatProtection: json['safechat_protection'] as bool?,
   createdAt: json['created_at'] as String,
   updatedAt: json['updated_at'] as String,
 );
@@ -29,6 +30,7 @@ Map<String, dynamic> _$UserProfileToJson(UserProfile instance) =>
       'bio': instance.bio,
       'photo_url': instance.photoUrl,
       'background_url': instance.backgroundUrl,
+      'safechat_protection': instance.safechatProtection,
       'created_at': instance.createdAt,
       'updated_at': instance.updatedAt,
     };

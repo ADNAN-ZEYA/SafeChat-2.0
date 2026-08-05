@@ -124,6 +124,7 @@ async def reserve_username(
                 "last_active_at": now,
                 "private_account": False,
                 "allow_messages_from": "everyone",
+                "safechat_protection": True,
                 "schema_version": 1,
             },
         )

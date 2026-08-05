@@ -1,6 +1,7 @@
 import 'dart:ui';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import '../../../core/network/dio_client.dart';
 import '../../auth/presentation/auth_provider.dart';
 import '../../../theme/theme_provider.dart';
 import '../../../shared/widgets/animated_ambient_background.dart';
@@ -999,6 +1000,56 @@ class SettingsView extends ConsumerWidget {
                   ref
                       .read(ambientPhysicsProvider.notifier)
                       .setMode(newSelection.first);
+                },
+              );
+            },
+          ),
+          const SizedBox(height: 24),
+          const Text(
+            'Safety & DM Protection',
+            style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
+          ),
+          const SizedBox(height: 12),
+          Consumer(
+            builder: (context, ref, _) {
+              final profile = ref.watch(authStateProvider).profile;
+              final safeChatEnabled = profile?.safechatProtection ?? true;
+              return SwitchListTile(
+                contentPadding: EdgeInsets.zero,
+                secondary: const Icon(Icons.shield_outlined, color: Color(0xFF8E2DE2)),
+                title: const Text(
+                  'SafeChat Protection',
+                  style: TextStyle(fontSize: 14, fontWeight: FontWeight.bold),
+                ),
+                subtitle: const Text(
+                  'Blocks toxic, inappropriate or bullying DMs sent to you',
+                  style: TextStyle(fontSize: 12, color: Colors.grey),
+                ),
+                value: safeChatEnabled,
+                onChanged: (value) async {
+                  try {
+                    await ref.read(dioProvider).patch('/api/v1/users/me', data: {
+                      'safechat_protection': value,
+                    });
+                    ref.read(authControllerProvider.notifier).checkAuthStatus();
+                    if (context.mounted) {
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        SnackBar(
+                          content: Text(
+                            value
+                                ? '🛡️ SafeChat DM Protection Enabled'
+                                : '⚠️ SafeChat DM Protection Disabled',
+                          ),
+                        ),
+                      );
+                    }
+                  } catch (e) {
+                    if (context.mounted) {
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        SnackBar(content: Text('Failed to update setting: $e')),
+                      );
+                    }
+                  }
                 },
               );
             },

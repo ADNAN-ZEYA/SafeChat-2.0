@@ -8,6 +8,7 @@ import '../../home/data/feed_post_model.dart';
 import '../data/follow_repository.dart';
 import 'follow_providers.dart';
 import 'user_posts_provider.dart';
+import '../../chat/presentation/chat_detail_view.dart';
 
 final publicProfileProvider =
     FutureProvider.family<Map<String, dynamic>, String>((ref, username) async {
@@ -176,31 +177,79 @@ class _ProfileBody extends ConsumerWidget {
                   ),
                   const SizedBox(height: 20),
 
-                  // Follow / Unfollow button
-                  isFollowingAsync.when(
-                    data: (following) => SizedBox(
-                      width: double.infinity,
-                      child: following
-                          ? OutlinedButton.icon(
-                              onPressed: () => ref
-                                  .read(followRepositoryProvider)
-                                  .unfollowUser(uid),
-                              icon: const Icon(Icons.check, size: 16),
-                              label: const Text('Following'),
-                            )
-                          : FilledButton.icon(
-                              onPressed: () => ref
-                                  .read(followRepositoryProvider)
-                                  .followUser(uid),
-                              icon: const Icon(Icons.person_add, size: 16),
-                              label: const Text('Follow'),
-                            ),
-                    ),
-                    loading: () => const SizedBox(
-                      height: 44,
-                      child: Center(child: CircularProgressIndicator()),
-                    ),
-                    error: (_, _) => const SizedBox.shrink(),
+                  // Follow & Message Action Row
+                  Row(
+                    children: [
+                      Expanded(
+                        child: isFollowingAsync.when(
+                          data: (following) => following
+                              ? OutlinedButton.icon(
+                                  style: OutlinedButton.styleFrom(
+                                    padding: const EdgeInsets.symmetric(vertical: 12),
+                                    side: BorderSide(
+                                      color: Theme.of(context).colorScheme.outline.withValues(alpha: 0.4),
+                                    ),
+                                  ),
+                                  onPressed: () => ref
+                                      .read(followRepositoryProvider)
+                                      .unfollowUser(uid),
+                                  icon: const Icon(Icons.check, size: 16, color: Color(0xFF8E2DE2)),
+                                  label: const Text('Following'),
+                                )
+                              : FilledButton.icon(
+                                  style: FilledButton.styleFrom(
+                                    padding: const EdgeInsets.symmetric(vertical: 12),
+                                  ),
+                                  onPressed: () => ref
+                                      .read(followRepositoryProvider)
+                                      .followUser(uid),
+                                  icon: const Icon(Icons.person_add, size: 16),
+                                  label: const Text('Follow'),
+                                ),
+                          loading: () => const SizedBox(
+                            height: 44,
+                            child: Center(child: CircularProgressIndicator()),
+                          ),
+                          error: (_, _) => const SizedBox.shrink(),
+                        ),
+                      ),
+                      const SizedBox(width: 10),
+                      Expanded(
+                        child: FilledButton.icon(
+                          style: FilledButton.styleFrom(
+                            backgroundColor: const Color(0xFF8E2DE2),
+                            padding: const EdgeInsets.symmetric(vertical: 12),
+                          ),
+                          onPressed: () async {
+                            final dio = ref.read(dioProvider);
+                            try {
+                              final res = await dio.post('/api/v1/chats/$uid');
+                              final chatData = res.data['data']['chat'] as Map<String, dynamic>;
+                              final chatId = chatData['id'] as String;
+                              if (context.mounted) {
+                                Navigator.of(context).push(
+                                  MaterialPageRoute(
+                                    builder: (_) => ChatDetailView(
+                                      chatId: chatId,
+                                      otherUid: uid,
+                                      otherUserName: displayName,
+                                    ),
+                                  ),
+                                );
+                              }
+                            } catch (e) {
+                              if (context.mounted) {
+                                ScaffoldMessenger.of(context).showSnackBar(
+                                  SnackBar(content: Text('Failed to start chat: $e')),
+                                );
+                              }
+                            }
+                          },
+                          icon: const Icon(Icons.chat_bubble_outline, size: 18),
+                          label: const Text('Message'),
+                        ),
+                      ),
+                    ],
                   ),
                   const SizedBox(height: 16),
                   const Divider(),

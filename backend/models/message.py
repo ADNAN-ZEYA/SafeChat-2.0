@@ -4,7 +4,7 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -17,6 +17,8 @@ class Message(BaseModel):
     sender_uid: str
     text: str
     image_url: str | None = None
+    media_type: Literal["text", "image", "video", "doc", "link"] = "text"
+    metadata: dict[str, Any] = Field(default_factory=dict)
     status: Literal["approved", "pending_review", "rejected"] = "approved"
     moderation_layer: str | None = None
     moderation_reason: str | None = None
@@ -52,8 +54,10 @@ class Chat(BaseModel):
 
 
 class SendMessageRequest(BaseModel):
-    text: str = Field(..., min_length=1, max_length=1000)
+    text: str = Field(..., min_length=1, max_length=2000)
     image_url: str | None = None
+    media_type: Literal["text", "image", "video", "doc", "link"] = "text"
+    metadata: dict[str, Any] = Field(default_factory=dict)
     # When True, submit flagged content for human verification (pending_review).
     submit_for_review: bool = False
 

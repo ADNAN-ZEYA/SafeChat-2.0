@@ -26,10 +26,16 @@ _CONTENT_TYPE_TO_EXT: dict[str, str] = {
     "image/png": "png",
     "image/webp": "webp",
     "video/mp4": "mp4",
+    "video/quicktime": "mov",
+    "application/pdf": "pdf",
+    "application/msword": "doc",
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document": "docx",
+    "text/plain": "txt",
 }
 
-# Contract size caps (docs/API_CONTRACTS.md §8): 10 MB images, 100 MB videos.
-MAX_IMAGE_BYTES = 10 * 1024 * 1024
+# Size caps: 25 MB images/docs, 100 MB videos.
+MAX_IMAGE_BYTES = 25 * 1024 * 1024
+MAX_DOC_BYTES = 25 * 1024 * 1024
 MAX_VIDEO_BYTES = 100 * 1024 * 1024
 
 
