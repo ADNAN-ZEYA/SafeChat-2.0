@@ -16,9 +16,12 @@ from typing import Any
 from fastapi import Depends, HTTPException, Security
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
+import hashlib
+from core.cache import TTLCache
 from core.firebase import auth
 
 bearer_scheme = HTTPBearer(auto_error=False)
+_token_claims_cache = TTLCache(default_ttl_seconds=300.0)
 
 
 def _unauthenticated(message: str) -> HTTPException:
@@ -42,10 +45,17 @@ async def get_current_user_claims(
             "Missing or malformed Authorization header. Expected: Bearer <token>."
         )
 
+    token_str = credentials.credentials
+    token_key = hashlib.sha256(token_str.encode("utf-8")).hexdigest()
+    cached_claims = _token_claims_cache.get(token_key)
+    if cached_claims is not None:
+        return cached_claims
+
     try:
         decoded: dict[str, Any] = await asyncio.to_thread(
-            auth.verify_id_token, credentials.credentials, check_revoked=True
+            auth.verify_id_token, token_str, check_revoked=True
         )
+        _token_claims_cache.set(token_key, decoded)
     except auth.ExpiredIdTokenError as exc:
         raise _unauthenticated("ID token has expired.") from exc
     except auth.RevokedIdTokenError as exc:

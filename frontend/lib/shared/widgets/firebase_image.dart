@@ -40,18 +40,30 @@ class FirebaseCachedNetworkImage extends ConsumerWidget {
           const SizedBox.shrink();
     }
 
+    if (imageUrl.startsWith('http://') || imageUrl.startsWith('https://')) {
+      return CachedNetworkImage(
+        imageUrl: imageUrl,
+        cacheKey: stableCacheKey(imageUrl),
+        fit: fit,
+        alignment: alignment,
+        memCacheWidth: memCacheWidth,
+        fadeInDuration: const Duration(milliseconds: 200),
+        placeholder: placeholder ?? (ctx, _) => const ShimmerFill(),
+        errorWidget: errorWidget,
+      );
+    }
+
     final asyncUrl = ref.watch(firebaseImageUrlProvider(imageUrl));
 
     return asyncUrl.when(
       data: (resolvedUrl) {
         return CachedNetworkImage(
           imageUrl: resolvedUrl,
-          // Cache by the stable path so rotating signatures still hit the cache.
           cacheKey: stableCacheKey(resolvedUrl),
           fit: fit,
           alignment: alignment,
           memCacheWidth: memCacheWidth,
-          fadeInDuration: const Duration(milliseconds: 250),
+          fadeInDuration: const Duration(milliseconds: 200),
           placeholder: placeholder ?? (ctx, _) => const ShimmerFill(),
           errorWidget: errorWidget,
         );
@@ -69,6 +81,12 @@ class FirebaseImageProviderWrapper {
   /// A helper for `backgroundImage` slots like CircleAvatar.
   static ImageProvider? getProvider(WidgetRef ref, String rawUrl) {
     if (rawUrl.isEmpty) return null;
+    if (rawUrl.startsWith('http://') || rawUrl.startsWith('https://')) {
+      return CachedNetworkImageProvider(
+        rawUrl,
+        cacheKey: stableCacheKey(rawUrl),
+      );
+    }
     final asyncUrl = ref.watch(firebaseImageUrlProvider(rawUrl));
     return asyncUrl.when(
       data: (url) =>

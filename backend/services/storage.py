@@ -141,6 +141,11 @@ def generate_download_url(object_path: str) -> str:
     return url
 
 
+from core.cache import TTLCache
+
+_signed_url_cache = TTLCache(default_ttl_seconds=300.0)
+
+
 def sign_media_url(url: str) -> str:
     """Convert a stored media URL into a signed read URL when it points at our
     private bucket; otherwise return it unchanged.
@@ -148,4 +153,9 @@ def sign_media_url(url: str) -> str:
     object_path = object_path_from_url(url)
     if object_path is None:
         return url
-    return generate_download_url(object_path)
+    cached = _signed_url_cache.get(object_path)
+    if cached is not None:
+        return str(cached)
+    signed = generate_download_url(object_path)
+    _signed_url_cache.set(object_path, signed)
+    return signed

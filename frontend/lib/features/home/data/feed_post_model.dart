@@ -103,4 +103,23 @@ class FeedPost {
 
   /// True when this post is still being reviewed by a human moderator.
   bool get isPendingReview => status == 'pending_review';
+
+  Map<String, dynamic> toJson() {
+    return {
+      'id': id,
+      'author_uid': authorUid,
+      'author_username': authorUsername,
+      'author_display_name': authorDisplayName,
+      'author_photo_url': authorPhotoUrl,
+      'text': text,
+      'image_url': imageUrl,
+      'media_urls': mediaUrls,
+      'media_type': mediaType,
+      'status': status,
+      'like_count': likeCount,
+      'comment_count': commentCount,
+      'view_count': viewCount,
+      'created_at': createdAt?.toIso8601String(),
+    };
+  }
 }
