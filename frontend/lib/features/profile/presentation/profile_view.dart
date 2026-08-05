@@ -688,7 +688,7 @@ class SettingsView extends ConsumerWidget {
           Row(
             children: [
               _LayoutCard(
-                label: 'Grid Feed',
+                label: 'Grid',
                 icon: Icons.grid_view_rounded,
                 color: Theme.of(context).colorScheme.primary,
                 isSelected: currentLayout == FeedLayoutMode.grid,
@@ -696,15 +696,26 @@ class SettingsView extends ConsumerWidget {
                     .read(feedLayoutProvider.notifier)
                     .setLayout(FeedLayoutMode.grid),
               ),
-              const SizedBox(width: 16),
+              const SizedBox(width: 8),
               _LayoutCard(
-                label: 'Card Feed',
+                label: 'Card',
                 icon: Icons.view_agenda_rounded,
                 color: Theme.of(context).colorScheme.secondary,
                 isSelected: currentLayout == FeedLayoutMode.card,
                 onTap: () => ref
                     .read(feedLayoutProvider.notifier)
                     .setLayout(FeedLayoutMode.card),
+              ),
+              const SizedBox(width: 8),
+              _LayoutCard(
+                label: 'Spatial Deck',
+                icon: Icons.auto_awesome_rounded,
+                color: Theme.of(context).colorScheme.tertiary,
+                isSelected: currentLayout == FeedLayoutMode.spatialDeck,
+                isNew: true,
+                onTap: () => ref
+                    .read(feedLayoutProvider.notifier)
+                    .setLayout(FeedLayoutMode.spatialDeck),
               ),
             ],
           ),
@@ -980,6 +991,7 @@ class _LayoutCard extends StatelessWidget {
   final IconData icon;
   final Color color;
   final bool isSelected;
+  final bool isNew;
   final VoidCallback onTap;
 
   const _LayoutCard({
@@ -987,6 +999,7 @@ class _LayoutCard extends StatelessWidget {
     required this.icon,
     required this.color,
     required this.isSelected,
+    this.isNew = false,
     required this.onTap,
   });
 
@@ -995,45 +1008,86 @@ class _LayoutCard extends StatelessWidget {
     return Expanded(
       child: GestureDetector(
         onTap: onTap,
-        child: AnimatedContainer(
-          duration: const Duration(milliseconds: 200),
-          padding: const EdgeInsets.symmetric(vertical: 16),
-          decoration: BoxDecoration(
-            color: isSelected
-                ? color.withValues(alpha: 0.15)
-                : Theme.of(context).cardColor,
-            borderRadius: BorderRadius.circular(16),
-            border: Border.all(
-              color: isSelected ? color : Colors.grey.withValues(alpha: 0.3),
-              width: isSelected ? 2 : 1,
-            ),
-          ),
-          child: Column(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              Icon(icon, color: isSelected ? color : Colors.grey, size: 28),
-              const SizedBox(height: 8),
-              Text(
-                label,
-                style: TextStyle(
-                  color: isSelected ? color : Colors.grey,
-                  fontWeight: isSelected ? FontWeight.w700 : FontWeight.w400,
-                  fontSize: 14,
+        child: Stack(
+          clipBehavior: Clip.none,
+          children: [
+            AnimatedContainer(
+              duration: const Duration(milliseconds: 200),
+              padding: const EdgeInsets.symmetric(vertical: 14),
+              decoration: BoxDecoration(
+                color: isSelected
+                    ? color.withValues(alpha: 0.15)
+                    : Theme.of(context).cardColor,
+                borderRadius: BorderRadius.circular(16),
+                border: Border.all(
+                  color: isSelected ? color : Colors.grey.withValues(alpha: 0.3),
+                  width: isSelected ? 2 : 1,
                 ),
               ),
-              if (isSelected) ...[
-                const SizedBox(height: 6),
-                Container(
-                  width: 6,
-                  height: 6,
+              child: Center(
+                child: Column(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    Icon(icon, color: isSelected ? color : Colors.grey, size: 26),
+                    const SizedBox(height: 6),
+                    Text(
+                      label,
+                      textAlign: TextAlign.center,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(
+                        color: isSelected ? color : Colors.grey,
+                        fontWeight: isSelected ? FontWeight.w700 : FontWeight.w400,
+                        fontSize: 12,
+                      ),
+                    ),
+                    if (isSelected) ...[
+                      const SizedBox(height: 4),
+                      Container(
+                        width: 6,
+                        height: 6,
+                        decoration: BoxDecoration(
+                          shape: BoxShape.circle,
+                          color: color,
+                        ),
+                      ),
+                    ],
+                  ],
+                ),
+              ),
+            ),
+            if (isNew)
+              Positioned(
+                top: -6,
+                right: -4,
+                child: Container(
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
                   decoration: BoxDecoration(
-                    shape: BoxShape.circle,
-                    color: color,
+                    gradient: const LinearGradient(
+                      colors: [Color(0xFF8E2DE2), Color(0xFF4A00E0)],
+                    ),
+                    borderRadius: BorderRadius.circular(8),
+                    boxShadow: [
+                      BoxShadow(
+                        color: const Color(0xFF8E2DE2).withValues(alpha: 0.4),
+                        blurRadius: 4,
+                        offset: const Offset(0, 2),
+                      ),
+                    ],
+                  ),
+                  child: const Text(
+                    'NEW',
+                    style: TextStyle(
+                      color: Colors.white,
+                      fontSize: 9,
+                      fontWeight: FontWeight.bold,
+                      letterSpacing: 0.5,
+                    ),
                   ),
                 ),
-              ],
-            ],
-          ),
+              ),
+          ],
         ),
       ),
     );

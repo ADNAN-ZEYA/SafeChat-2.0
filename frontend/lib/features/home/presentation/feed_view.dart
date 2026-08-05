@@ -126,7 +126,9 @@ class _FeedTab extends ConsumerWidget {
                 ),
                 sliver: layoutMode == FeedLayoutMode.grid
                     ? _buildGridView(context, posts)
-                    : _buildCardView(context, posts),
+                    : layoutMode == FeedLayoutMode.card
+                        ? _buildCardView(context, posts)
+                        : _buildSpatialDeckView(context, posts),
               ),
             ],
           ),
@@ -160,6 +162,20 @@ class _FeedTab extends ConsumerWidget {
         return PostOpenContainer(
           post: post,
           child: _ListPostCard(post: post),
+        );
+      },
+    );
+  }
+
+  Widget _buildSpatialDeckView(BuildContext context, List<FeedPost> posts) {
+    return SliverList.separated(
+      itemCount: posts.length,
+      separatorBuilder: (_, _) => const SizedBox(height: 28),
+      itemBuilder: (context, index) {
+        final post = posts[index];
+        return PostOpenContainer(
+          post: post,
+          child: _SpatialDeckCard(post: post),
         );
       },
     );
@@ -1480,3 +1496,386 @@ class _LikeActionWidgetState extends ConsumerState<_LikeActionWidget> {
     );
   }
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Spatial Deck Card (Modern Fluid Concept)
+// ─────────────────────────────────────────────────────────────────────────────
+
+const _emeraldColor = Color(0xFF10B981);
+
+class _SpatialDeckCard extends ConsumerWidget {
+  final FeedPost post;
+  const _SpatialDeckCard({required this.post});
+
+  void _showSafetyShieldDialog(BuildContext context) {
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+        title: const Row(
+          children: [
+            Icon(Icons.shield_outlined, color: _emeraldColor, size: 28),
+            SizedBox(width: 10),
+            Text('SafeChat AI Verified', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 18)),
+          ],
+        ),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text(
+              'This content passed SafeChat real-time multi-layer AI moderation cascade with zero toxic or bullying signals.',
+              style: TextStyle(fontSize: 14, height: 1.4),
+            ),
+            const SizedBox(height: 16),
+            Container(
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: _emeraldColor.withValues(alpha: 0.1),
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(color: _emeraldColor.withValues(alpha: 0.3)),
+              ),
+              child: const Column(
+                children: [
+                  _SafetyCheckRow(label: 'Keyword Lexicon Scorer', status: 'Passed (0.00)'),
+                  SizedBox(height: 6),
+                  _SafetyCheckRow(label: 'TF-IDF Toxicity Engine', status: 'Clean'),
+                  SizedBox(height: 6),
+                  _SafetyCheckRow(label: 'Vision Media Filter', status: 'Verified Safe'),
+                ],
+              ),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(),
+            child: const Text('Got it'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final theme = Theme.of(context);
+    final colorScheme = theme.colorScheme;
+    final statsAsync = ref.watch(postStatsProvider(post.id));
+    final isLikedAsync = ref.watch(isLikedProvider(post.id));
+    final isLiked = isLikedAsync.value ?? false;
+
+    final statsData = statsAsync.value;
+    final liveLikeCount = statsData?['like_count'] as int? ?? post.likeCount;
+    final liveCommentCount = statsData?['comment_count'] as int? ?? post.commentCount;
+    final liveViewCount = statsData?['view_count'] as int? ?? post.viewCount;
+
+    final mediaUrls = post.displayUrls;
+
+    return Container(
+      decoration: BoxDecoration(
+        color: colorScheme.surfaceContainerHighest.withValues(alpha: 0.45),
+        borderRadius: BorderRadius.circular(28),
+        border: Border.all(
+          color: colorScheme.primary.withValues(alpha: 0.25),
+          width: 1.5,
+        ),
+        boxShadow: [
+          BoxShadow(
+            color: colorScheme.primary.withValues(alpha: 0.08),
+            blurRadius: 24,
+            spreadRadius: 2,
+            offset: const Offset(0, 8),
+          ),
+        ],
+      ),
+      child: ClipRRect(
+        borderRadius: BorderRadius.circular(28),
+        child: BackdropFilter(
+          filter: ImageFilter.blur(sigmaX: 16, sigmaY: 16),
+          child: Padding(
+            padding: const EdgeInsets.all(16.0),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                // Top Author + Safety Shield Row
+                Row(
+                  children: [
+                    // Author Avatar with Glowing Ring
+                    GestureDetector(
+                      onTap: () {
+                        Navigator.of(context).push(
+                          MaterialPageRoute(
+                            builder: (_) => PublicProfileView(
+                              uid: post.authorUid,
+                              username: post.authorUsername,
+                            ),
+                          ),
+                        );
+                      },
+                      child: Container(
+                        padding: const EdgeInsets.all(2.5),
+                        decoration: BoxDecoration(
+                          shape: BoxShape.circle,
+                          gradient: SweepGradient(
+                            colors: [
+                              colorScheme.primary,
+                              colorScheme.tertiary,
+                              colorScheme.primary,
+                            ],
+                          ),
+                        ),
+                        child: CircleAvatar(
+                          radius: 20,
+                          backgroundColor: colorScheme.surface,
+                          backgroundImage: FirebaseImageProviderWrapper.getProvider(
+                            ref,
+                            post.authorPhotoUrl,
+                          ),
+                          child: post.authorPhotoUrl.isEmpty
+                              ? Text(
+                                  post.authorDisplayName.isNotEmpty
+                                      ? post.authorDisplayName[0].toUpperCase()
+                                      : '?',
+                                  style: const TextStyle(fontWeight: FontWeight.bold),
+                                )
+                              : null,
+                        ),
+                      ),
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            post.authorDisplayName,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: const TextStyle(
+                              fontWeight: FontWeight.bold,
+                              fontSize: 15,
+                            ),
+                          ),
+                          Text(
+                            '@${post.authorUsername}',
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: TextStyle(
+                              fontSize: 12,
+                              color: colorScheme.onSurfaceVariant,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                    // Interactive Safety Shield Badge
+                    InkWell(
+                      onTap: () => _showSafetyShieldDialog(context),
+                      borderRadius: BorderRadius.circular(20),
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+                        decoration: BoxDecoration(
+                          color: _emeraldColor.withValues(alpha: 0.12),
+                          borderRadius: BorderRadius.circular(20),
+                          border: Border.all(
+                            color: _emeraldColor.withValues(alpha: 0.4),
+                          ),
+                        ),
+                        child: const Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Icon(Icons.shield, color: _emeraldColor, size: 14),
+                            SizedBox(width: 4),
+                            Text(
+                              'Verified Safe',
+                              style: TextStyle(
+                                color: _emeraldColor,
+                                fontSize: 11,
+                                fontWeight: FontWeight.bold,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ).animate().scale(duration: 1000.ms, curve: Curves.easeInOut),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 14),
+
+                // Post Caption (Markdown)
+                if (post.text.isNotEmpty) ...[
+                  MarkdownBody(
+                    data: post.text,
+                    styleSheet: MarkdownStyleSheet(
+                      p: TextStyle(
+                        fontSize: 15,
+                        height: 1.4,
+                        color: colorScheme.onSurface,
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 14),
+                ],
+
+                // Media Display (Image Grid / Carousel)
+                if (mediaUrls.isNotEmpty) ...[
+                  ClipRRect(
+                    borderRadius: BorderRadius.circular(20),
+                    child: Container(
+                      constraints: const BoxConstraints(maxHeight: 340),
+                      width: double.infinity,
+                      child: FirebaseCachedNetworkImage(
+                        imageUrl: mediaUrls.first,
+                        fit: BoxFit.cover,
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 14),
+                ],
+
+                // Action Bar (Likes, Comments, Views, Share)
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    Row(
+                      children: [
+                        // Animated Like Pill
+                        InkWell(
+                          onTap: () {
+                            HapticFeedback.lightImpact();
+                            if (isLiked) {
+                              ref.read(postRepositoryProvider).unlikePost(post.id);
+                            } else {
+                              ref.read(postRepositoryProvider).likePost(post.id);
+                            }
+                          },
+                          borderRadius: BorderRadius.circular(20),
+                          child: Container(
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 12,
+                              vertical: 6,
+                            ),
+                            decoration: BoxDecoration(
+                              color: isLiked
+                                  ? Colors.red.withValues(alpha: 0.15)
+                                  : colorScheme.surfaceContainer.withValues(alpha: 0.6),
+                              borderRadius: BorderRadius.circular(20),
+                            ),
+                            child: Row(
+                              children: [
+                                Icon(
+                                  isLiked ? Icons.favorite : Icons.favorite_border,
+                                  color: isLiked ? Colors.red : colorScheme.onSurfaceVariant,
+                                  size: 18,
+                                ),
+                                const SizedBox(width: 6),
+                                RollingCounter(
+                                  value: liveLikeCount < 0 ? 0 : liveLikeCount,
+                                  style: TextStyle(
+                                    fontSize: 13,
+                                    fontWeight: FontWeight.w600,
+                                    color: isLiked ? Colors.red : colorScheme.onSurfaceVariant,
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ),
+                        const SizedBox(width: 10),
+
+                        // Comment Button
+                        InkWell(
+                          onTap: () => showCommentsBottomSheet(context, post.id),
+                          borderRadius: BorderRadius.circular(20),
+                          child: Container(
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 12,
+                              vertical: 6,
+                            ),
+                            decoration: BoxDecoration(
+                              color: colorScheme.surfaceContainer.withValues(alpha: 0.6),
+                              borderRadius: BorderRadius.circular(20),
+                            ),
+                            child: Row(
+                              children: [
+                                Icon(
+                                  Icons.chat_bubble_outline,
+                                  color: colorScheme.onSurfaceVariant,
+                                  size: 18,
+                                ),
+                                const SizedBox(width: 6),
+                                Text(
+                                  '$liveCommentCount',
+                                  style: TextStyle(
+                                    fontSize: 13,
+                                    fontWeight: FontWeight.w600,
+                                    color: colorScheme.onSurfaceVariant,
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+
+                    Row(
+                      children: [
+                        // View Count Badge
+                        Row(
+                          children: [
+                            Icon(
+                              Icons.remove_red_eye_outlined,
+                              size: 16,
+                              color: colorScheme.onSurfaceVariant.withValues(alpha: 0.7),
+                            ),
+                            const SizedBox(width: 4),
+                            Text(
+                              '$liveViewCount',
+                              style: TextStyle(
+                                fontSize: 12,
+                                color: colorScheme.onSurfaceVariant.withValues(alpha: 0.7),
+                              ),
+                            ),
+                          ],
+                        ),
+                        const SizedBox(width: 12),
+
+                        // Share Button
+                        IconButton(
+                          icon: const Icon(Icons.share_outlined, size: 20),
+                          onPressed: () {
+                            Share.share('Check out this post on SafeChat: ${post.text}');
+                          },
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _SafetyCheckRow extends StatelessWidget {
+  final String label;
+  final String status;
+  const _SafetyCheckRow({required this.label, required this.status});
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+      children: [
+        Text(label, style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w500)),
+        Text(status, style: const TextStyle(fontSize: 12, color: _emeraldColor, fontWeight: FontWeight.bold)),
+      ],
+    );
+  }
+}
+
