@@ -1046,30 +1046,45 @@ class PostDetailScreenState extends ConsumerState<PostDetailScreen> {
                         ),
                       ),
                       const SizedBox(height: 32),
-                      Row(
-                        mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-                        children: [
-                          _LikeActionWidget(post: widget.post),
-                          _buildAction(
-                            Icons.chat_bubble_outline,
-                            '${widget.post.commentCount}',
-                            () => showCommentsBottomSheet(
-                              context,
-                              widget.post.id,
-                            ),
-                          ),
-                          _buildAction(Icons.share_outlined, 'Share', () {
-                            final shareText =
-                                'Check out this post on SafeChat: https://safechat.com/post/${widget.post.id}';
-                            // ignore: deprecated_member_use
-                            Share.share(shareText);
-                          }),
-                          _buildAction(
-                            Icons.visibility_outlined,
-                            '${widget.post.viewCount}',
-                            () {}, // View count is just a display
-                          ),
-                        ],
+                      Consumer(
+                        builder: (context, ref, child) {
+                          final statsAsync = ref.watch(
+                            postStatsProvider(widget.post.id),
+                          );
+                          final statsData = statsAsync.value;
+                          final liveCommentCount =
+                              statsData?['comment_count'] as int? ??
+                                  widget.post.commentCount;
+                          final liveViewCount =
+                              statsData?['view_count'] as int? ??
+                                  widget.post.viewCount;
+
+                          return Row(
+                            mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                            children: [
+                              _LikeActionWidget(post: widget.post),
+                              _buildAction(
+                                Icons.chat_bubble_outline,
+                                '$liveCommentCount',
+                                () => showCommentsBottomSheet(
+                                  context,
+                                  widget.post.id,
+                                ),
+                              ),
+                              _buildAction(Icons.share_outlined, 'Share', () {
+                                final shareText =
+                                    'Check out this post on SafeChat: https://safechat.com/post/${widget.post.id}';
+                                // ignore: deprecated_member_use
+                                Share.share(shareText);
+                              }),
+                              _buildAction(
+                                Icons.visibility_outlined,
+                                '$liveViewCount',
+                                () {}, // View count is just a display
+                              ),
+                            ],
+                          );
+                        },
                       ),
                       const SizedBox(height: 48),
                     ],
@@ -1413,29 +1428,17 @@ class _LikeActionWidget extends ConsumerStatefulWidget {
 }
 
 class _LikeActionWidgetState extends ConsumerState<_LikeActionWidget> {
-  bool? _initialIsLiked;
-  int _offset = 0;
-
   @override
   Widget build(BuildContext context) {
     final isLikedAsync = ref.watch(isLikedProvider(widget.post.id));
     final isLiked = isLikedAsync.value ?? false;
 
-    if (!isLikedAsync.isLoading && _initialIsLiked == null) {
-      _initialIsLiked = isLiked;
-    }
+    final statsAsync = ref.watch(postStatsProvider(widget.post.id));
+    final statsData = statsAsync.value;
+    final liveLikeCount =
+        statsData?['like_count'] as int? ?? widget.post.likeCount;
 
-    if (_initialIsLiked != null) {
-      if (isLiked && !_initialIsLiked!) {
-        _offset = 1;
-      } else if (!isLiked && _initialIsLiked!) {
-        _offset = -1;
-      } else {
-        _offset = 0;
-      }
-    }
-
-    int displayCount = widget.post.likeCount + _offset;
+    int displayCount = liveLikeCount;
     if (displayCount < 0) displayCount = 0;
 
     Widget icon = Icon(
