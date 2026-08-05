@@ -1,3 +1,4 @@
+import 'dart:ui';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../auth/presentation/auth_provider.dart';
@@ -39,6 +40,7 @@ class ProfileView extends ConsumerWidget {
 
   Widget _buildModernCover(BuildContext context, dynamic user, WidgetRef ref) {
     final scaffoldColor = Theme.of(context).scaffoldBackgroundColor;
+    final colorScheme = Theme.of(context).colorScheme;
     final profile = ref.watch(authStateProvider).profile;
 
     return Stack(
@@ -53,109 +55,135 @@ class ProfileView extends ConsumerWidget {
         // 2. Scrolling Content
         CustomScrollView(
           slivers: [
-            // Edge-to-Edge Cover Photo & Avatar
+            // Edge-to-Edge Cover Photo & Avatar Header
             SliverToBoxAdapter(
               child: SizedBox(
-                height: 260, // 200 for cover + 60 for avatar overlap
+                height: 270,
                 child: Stack(
                   children: [
-                    // Sharp Edge-to-Edge Cover Photo
+                    // Cover Photo
                     Positioned(
                       top: 0,
                       left: 0,
                       right: 0,
                       height: 200,
-                      child: ClipRect(
+                      child: ClipRRect(
+                        borderRadius: const BorderRadius.vertical(
+                          bottom: Radius.circular(28),
+                        ),
                         child: profile?.backgroundUrl != null
                             ? FirebaseCachedNetworkImage(
                                 imageUrl: profile!.backgroundUrl!,
                                 fit: BoxFit.cover,
-                                placeholder: (_, _) =>
-                                    _buildGradientCover(user),
-                                errorWidget: (_, _, _) =>
-                                    _buildGradientCover(user),
+                                placeholder: (_, _) => _buildGradientCover(user),
+                                errorWidget: (_, _, _) => _buildGradientCover(user),
                               )
                             : _buildGradientCover(user),
                       ),
                     ),
-                    // Action Buttons in Safe Area
+
+                    // Top Action Buttons in Safe Area
                     Positioned(
                       top: 0,
-                      right: 0,
+                      right: 12,
                       child: SafeArea(
-                        child: Padding(
-                          padding: const EdgeInsets.all(8.0),
-                          child: Row(
-                            children: [
-                              IconButton.filledTonal(
-                                icon: const Icon(Icons.edit),
-                                onPressed: () => Navigator.of(context).push(
-                                  MaterialPageRoute(
-                                    builder: (_) => const EditProfileView(),
-                                  ),
+                        child: Row(
+                          children: [
+                            IconButton.filledTonal(
+                              style: IconButton.styleFrom(
+                                backgroundColor: colorScheme.surface.withValues(alpha: 0.7),
+                              ),
+                              icon: const Icon(Icons.edit_outlined, size: 20),
+                              onPressed: () => Navigator.of(context).push(
+                                MaterialPageRoute(
+                                  builder: (_) => const EditProfileView(),
                                 ),
                               ),
-                              const SizedBox(width: 8),
-                              IconButton.filledTonal(
-                                icon: const Icon(Icons.settings),
-                                onPressed: () => Navigator.of(context).push(
-                                  MaterialPageRoute(
-                                    builder: (_) => const SettingsView(),
-                                  ),
+                            ),
+                            const SizedBox(width: 6),
+                            IconButton.filledTonal(
+                              style: IconButton.styleFrom(
+                                backgroundColor: colorScheme.surface.withValues(alpha: 0.7),
+                              ),
+                              icon: const Icon(Icons.settings_outlined, size: 20),
+                              onPressed: () => Navigator.of(context).push(
+                                MaterialPageRoute(
+                                  builder: (_) => const SettingsView(),
                                 ),
                               ),
-                            ],
-                          ),
+                            ),
+                          ],
                         ),
                       ),
                     ),
-                    // Avatar perfectly overlapping the bottom edge
+
+                    // Avatar with Glowing Multi-Color Ring
                     Positioned(
-                      top: 155,
-                      left: 16,
+                      top: 145,
+                      left: 20,
                       child: Container(
+                        padding: const EdgeInsets.all(3.5),
                         decoration: BoxDecoration(
                           shape: BoxShape.circle,
-                          border: Border.all(color: scaffoldColor, width: 4),
+                          gradient: LinearGradient(
+                            colors: [
+                              colorScheme.primary,
+                              colorScheme.tertiary,
+                              const Color(0xFF8E2DE2),
+                            ],
+                          ),
+                          boxShadow: [
+                            BoxShadow(
+                              color: colorScheme.primary.withValues(alpha: 0.3),
+                              blurRadius: 16,
+                              spreadRadius: 2,
+                            ),
+                          ],
                         ),
-                        child: ClipOval(
-                          child: SizedBox(
-                            width: 90,
-                            height: 90,
-                            child: _buildAvatarImage(profile, user),
+                        child: CircleAvatar(
+                          radius: 44,
+                          backgroundColor: scaffoldColor,
+                          child: ClipOval(
+                            child: SizedBox(
+                              width: 84,
+                              height: 84,
+                              child: _buildAvatarImage(profile, user),
+                            ),
                           ),
                         ),
                       ),
                     ),
-                    // Action buttons to the right of avatar
+
+                    // Secondary Quick Action Pills to the right of avatar
                     Positioned(
-                      top: 210, // Just below the cover photo
+                      top: 212,
                       right: 16,
                       child: Row(
                         children: [
                           IconButton.filledTonal(
+                            style: IconButton.styleFrom(
+                              backgroundColor: colorScheme.surfaceContainerHighest.withValues(alpha: 0.8),
+                            ),
                             onPressed: () => Navigator.of(context).push(
                               MaterialPageRoute(
                                 builder: (_) => const NetworkGraphView(),
                               ),
                             ),
-                            icon: const Icon(Icons.hub),
+                            icon: const Icon(Icons.hub_outlined, size: 20),
                             tooltip: 'Network Graph',
                           ),
-                          const SizedBox(width: 8),
+                          const SizedBox(width: 6),
                           IconButton.filledTonal(
+                            style: IconButton.styleFrom(
+                              backgroundColor: colorScheme.surfaceContainerHighest.withValues(alpha: 0.8),
+                            ),
                             onPressed: () => Navigator.of(context).push(
                               MaterialPageRoute(
                                 builder: (_) => const ContentStatusView(),
                               ),
                             ),
-                            icon: const Icon(Icons.gavel),
+                            icon: const Icon(Icons.gavel_outlined, size: 20),
                             tooltip: 'Content Status / Appeals',
-                          ),
-                          const SizedBox(width: 8),
-                          IconButton.filledTonal(
-                            onPressed: () {},
-                            icon: const Icon(Icons.share),
                           ),
                         ],
                       ),
@@ -164,83 +192,116 @@ class ProfileView extends ConsumerWidget {
                 ),
               ),
             ),
-            // Profile Info Below
+
+            // Profile Info & Bio
             SliverToBoxAdapter(
               child: Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 16.0),
+                padding: const EdgeInsets.symmetric(horizontal: 20.0),
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    const SizedBox(height: 12),
-                    // Profile Info
                     Text(
                       profile?.displayName ??
                           user?.displayName ??
                           'SafeChat User',
-                      style: Theme.of(context).textTheme.headlineMedium
-                          ?.copyWith(fontWeight: FontWeight.bold),
+                      style: Theme.of(context).textTheme.headlineMedium?.copyWith(
+                            fontWeight: FontWeight.bold,
+                            letterSpacing: -0.5,
+                          ),
                     ),
-                    const SizedBox(height: 4),
+                    const SizedBox(height: 2),
                     Text(
                       '@${profile?.username ?? user?.displayName?.toLowerCase().replaceAll(' ', '') ?? 'user'}',
+                      style: TextStyle(
+                        fontSize: 14,
+                        color: colorScheme.onSurfaceVariant,
+                        fontWeight: FontWeight.w500,
+                      ),
                     ),
-                    const SizedBox(height: 16),
+                    const SizedBox(height: 14),
                     Text(
                       profile?.bio?.isNotEmpty == true
                           ? profile!.bio!
                           : 'Creating a safer social space 🛡️\n#flutter #dev',
-                    ),
-                    const SizedBox(height: 24),
-                    // Stats Card
-                    Container(
-                      padding: const EdgeInsets.symmetric(vertical: 16),
-                      decoration: BoxDecoration(
-                        color: Theme.of(
-                          context,
-                        ).colorScheme.surfaceContainer.withValues(alpha: 0.5),
-                        borderRadius: BorderRadius.circular(16),
-                        border: Border.all(
-                          color: Theme.of(
-                            context,
-                          ).colorScheme.outlineVariant.withValues(alpha: 0.5),
-                        ),
+                      style: TextStyle(
+                        fontSize: 14,
+                        height: 1.4,
+                        color: colorScheme.onSurface.withValues(alpha: 0.9),
                       ),
-                      child: Consumer(
-                        builder: (context, ref, _) {
-                          final uid = user?.uid ?? '';
-                          final followersAsync = ref.watch(
-                            followersCountProvider(uid),
-                          );
-                          final followingAsync = ref.watch(
-                            followingCountProvider(uid),
-                          );
-                          final friendsAsync = ref.watch(friendsProvider(uid));
+                    ),
+                    const SizedBox(height: 20),
 
-                          return Row(
-                            mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-                            children: [
-                              _StatColumn(
-                                label: 'Followers',
-                                count: followersAsync.value,
-                              ),
-                              _StatColumn(
-                                label: 'Following',
-                                count: followingAsync.value,
-                              ),
-                              _StatColumn(
-                                label: 'Friends',
-                                count: friendsAsync.value?.length,
-                              ),
-                            ],
-                          );
-                        },
+                    // Frosted Glass Stats Card
+                    Container(
+                      padding: const EdgeInsets.symmetric(vertical: 18),
+                      decoration: BoxDecoration(
+                        color: colorScheme.surfaceContainerHighest.withValues(alpha: 0.45),
+                        borderRadius: BorderRadius.circular(24),
+                        border: Border.all(
+                          color: colorScheme.primary.withValues(alpha: 0.2),
+                          width: 1.5,
+                        ),
+                        boxShadow: [
+                          BoxShadow(
+                            color: Colors.black.withValues(alpha: 0.05),
+                            blurRadius: 16,
+                            offset: const Offset(0, 4),
+                          ),
+                        ],
+                      ),
+                      child: ClipRRect(
+                        borderRadius: BorderRadius.circular(24),
+                        child: BackdropFilter(
+                          filter: ImageFilter.blur(sigmaX: 16, sigmaY: 16),
+                          child: Consumer(
+                            builder: (context, ref, _) {
+                              final uid = user?.uid ?? '';
+                              final followersAsync = ref.watch(
+                                followersCountProvider(uid),
+                              );
+                              final followingAsync = ref.watch(
+                                followingCountProvider(uid),
+                              );
+                              final friendsAsync = ref.watch(friendsProvider(uid));
+
+                              return Row(
+                                mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                                children: [
+                                  _StatColumn(
+                                    label: 'Followers',
+                                    count: followersAsync.value,
+                                  ),
+                                  Container(
+                                    width: 1,
+                                    height: 32,
+                                    color: colorScheme.outlineVariant.withValues(alpha: 0.5),
+                                  ),
+                                  _StatColumn(
+                                    label: 'Following',
+                                    count: followingAsync.value,
+                                  ),
+                                  Container(
+                                    width: 1,
+                                    height: 32,
+                                    color: colorScheme.outlineVariant.withValues(alpha: 0.5),
+                                  ),
+                                  _StatColumn(
+                                    label: 'Friends',
+                                    count: friendsAsync.value?.length,
+                                  ),
+                                ],
+                              );
+                            },
+                          ),
+                        ),
                       ),
                     ),
                   ],
                 ),
               ),
             ),
-            const SliverToBoxAdapter(child: SizedBox(height: 24)),
+
+            const SliverToBoxAdapter(child: SizedBox(height: 20)),
             _buildGrid(ref, user?.uid ?? ''),
             const SliverToBoxAdapter(child: SizedBox(height: 100)),
           ],
@@ -404,37 +465,43 @@ class ProfileView extends ConsumerWidget {
             ),
           );
         }
-        return SliverGrid(
-          gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-            crossAxisCount: 3,
-            mainAxisSpacing: 2,
-            crossAxisSpacing: 2,
-          ),
-          delegate: SliverChildBuilderDelegate((context, index) {
-            final post = posts[index];
-            final thumb = post.displayUrls.isNotEmpty
-                ? post.displayUrls.first
-                : '';
-            // Tap a grid post to open it in the shared post-detail screen.
-            return PostOpenContainer(
-              post: post,
-              child: Container(
-                decoration: BoxDecoration(
-                  color: Theme.of(context).colorScheme.surfaceContainerHighest,
+        return SliverPadding(
+          padding: const EdgeInsets.symmetric(horizontal: 16),
+          sliver: SliverGrid(
+            gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+              crossAxisCount: 3,
+              mainAxisSpacing: 8,
+              crossAxisSpacing: 8,
+            ),
+            delegate: SliverChildBuilderDelegate((context, index) {
+              final post = posts[index];
+              final thumb = post.displayUrls.isNotEmpty
+                  ? post.displayUrls.first
+                  : '';
+              return PostOpenContainer(
+                post: post,
+                child: ClipRRect(
+                  borderRadius: BorderRadius.circular(14),
+                  child: Container(
+                    decoration: BoxDecoration(
+                      color: Theme.of(context).colorScheme.surfaceContainerHighest,
+                      borderRadius: BorderRadius.circular(14),
+                    ),
+                    child: thumb.isNotEmpty
+                        ? FirebaseCachedNetworkImage(
+                            imageUrl: thumb,
+                            fit: BoxFit.cover,
+                            memCacheWidth: 400,
+                            errorWidget: (_, _, _) => const Center(
+                              child: Icon(Icons.broken_image_outlined),
+                            ),
+                          )
+                        : const Center(child: Icon(Icons.article_outlined)),
+                  ),
                 ),
-                child: thumb.isNotEmpty
-                    ? FirebaseCachedNetworkImage(
-                        imageUrl: thumb,
-                        fit: BoxFit.cover,
-                        memCacheWidth: 400,
-                        errorWidget: (_, _, _) => const Center(
-                          child: Icon(Icons.broken_image_outlined),
-                        ),
-                      )
-                    : const Center(child: Icon(Icons.article_outlined)),
-              ),
-            );
-          }, childCount: posts.length),
+              );
+            }, childCount: posts.length),
+          ),
         );
       },
     );

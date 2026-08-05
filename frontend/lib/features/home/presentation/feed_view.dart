@@ -549,12 +549,13 @@ class _ListPostCard extends ConsumerWidget {
                 : null,
           ),
           if (thumb != null)
-            SizedBox(
-              height: 300,
+            Container(
+              constraints: const BoxConstraints(maxHeight: 380, minHeight: 200),
               width: double.infinity,
+              color: Colors.black.withValues(alpha: 0.8),
               child: FirebaseCachedNetworkImage(
                 imageUrl: thumb,
-                fit: BoxFit.cover,
+                fit: BoxFit.contain,
                 memCacheWidth: 1080,
                 errorWidget: (_, _, _) => Container(
                   color: Theme.of(context).colorScheme.errorContainer,
@@ -815,101 +816,108 @@ class PostDetailScreenState extends ConsumerState<PostDetailScreen> {
               children: [
                 // Image carousel
                 if (_mediaUrls.isNotEmpty)
-                  SizedBox(
-                    height: 400,
-                    child: Stack(
-                      children: [
-                        Positioned.fill(
-                          child: PageView.builder(
-                            itemCount: _mediaUrls.length,
-                            onPageChanged: (i) =>
-                                setState(() => _currentPage = i),
-                            itemBuilder: (context, i) => GestureDetector(
-                              onTap: () => Navigator.of(context).push(
-                                MaterialPageRoute<void>(
-                                  fullscreenDialog: true,
-                                  builder: (_) => FullscreenMediaViewer(
-                                    urls: _mediaUrls,
-                                    initialIndex: i,
-                                  ),
-                                ),
-                              ),
-                              child: Stack(
-                                fit: StackFit.expand,
-                                children: [
-                                  FirebaseCachedNetworkImage(
-                                    imageUrl: _mediaUrls[i],
-                                    fit: BoxFit.cover,
-                                    memCacheWidth: 1080,
-                                    errorWidget: (context, url, error) =>
-                                        Container(
-                                          color: Theme.of(
-                                            context,
-                                          ).colorScheme.surfaceContainerHighest,
-                                          child: const Center(
-                                            child: Icon(
-                                              Icons.broken_image_outlined,
-                                              size: 48,
-                                              color: Colors.grey,
-                                            ),
-                                          ),
-                                        ),
-                                  ),
-                                  // Fullscreen affordance icon
-                                  Positioned(
-                                    top: 10,
-                                    right: 10,
-                                    child: Container(
-                                      padding: const EdgeInsets.all(5),
-                                      decoration: BoxDecoration(
-                                        color: Colors.black45,
-                                        borderRadius: BorderRadius.circular(8),
-                                      ),
-                                      child: const Icon(
-                                        Icons.fullscreen,
-                                        color: Colors.white,
-                                        size: 18,
-                                      ),
+                  ConstrainedBox(
+                    constraints: BoxConstraints(
+                      maxHeight: MediaQuery.of(context).size.height * 0.65,
+                      minHeight: 280,
+                    ),
+                    child: Container(
+                      width: double.infinity,
+                      color: Colors.black.withValues(alpha: 0.9),
+                      child: Stack(
+                        children: [
+                          Positioned.fill(
+                            child: PageView.builder(
+                              itemCount: _mediaUrls.length,
+                              onPageChanged: (i) =>
+                                  setState(() => _currentPage = i),
+                              itemBuilder: (context, i) => GestureDetector(
+                                onTap: () => Navigator.of(context).push(
+                                  MaterialPageRoute<void>(
+                                    fullscreenDialog: true,
+                                    builder: (_) => FullscreenMediaViewer(
+                                      urls: _mediaUrls,
+                                      initialIndex: i,
                                     ),
                                   ),
-                                ],
+                                ),
+                                child: Stack(
+                                  fit: StackFit.expand,
+                                  children: [
+                                    FirebaseCachedNetworkImage(
+                                      imageUrl: _mediaUrls[i],
+                                      fit: BoxFit.contain,
+                                      memCacheWidth: 1080,
+                                      errorWidget: (context, url, error) =>
+                                          Container(
+                                            color: Theme.of(
+                                              context,
+                                            ).colorScheme.surfaceContainerHighest,
+                                            child: const Center(
+                                              child: Icon(
+                                                Icons.broken_image_outlined,
+                                                size: 48,
+                                                color: Colors.grey,
+                                              ),
+                                            ),
+                                          ),
+                                    ),
+                                    // Fullscreen affordance icon
+                                    Positioned(
+                                      top: 10,
+                                      right: 10,
+                                      child: Container(
+                                        padding: const EdgeInsets.all(5),
+                                        decoration: BoxDecoration(
+                                          color: Colors.black45,
+                                          borderRadius: BorderRadius.circular(8),
+                                        ),
+                                        child: const Icon(
+                                          Icons.fullscreen,
+                                          color: Colors.white,
+                                          size: 18,
+                                        ),
+                                      ),
+                                    ),
+                                  ],
+                                ),
                               ),
                             ),
                           ),
-                        ),
-                        // Dot indicators.
-                        if (_mediaUrls.length > 1)
-                          Positioned(
-                            bottom: 16,
-                            left: 0,
-                            right: 0,
-                            child: Row(
-                              mainAxisAlignment: MainAxisAlignment.center,
-                              children: List.generate(_mediaUrls.length, (i) {
-                                return AnimatedContainer(
-                                  duration: const Duration(milliseconds: 300),
-                                  margin: const EdgeInsets.symmetric(
-                                    horizontal: 4,
-                                  ),
-                                  width: _currentPage == i ? 12 : 8,
-                                  height: _currentPage == i ? 12 : 8,
-                                  decoration: BoxDecoration(
-                                    color: _currentPage == i
-                                        ? Colors.white
-                                        : Colors.white.withValues(alpha: 0.5),
-                                    shape: BoxShape.circle,
-                                    boxShadow: const [
-                                      BoxShadow(
-                                        color: Colors.black45,
-                                        blurRadius: 4,
-                                      ),
-                                    ],
-                                  ),
-                                );
-                              }),
+                          // Dot indicators.
+                          if (_mediaUrls.length > 1)
+                            Positioned(
+                              bottom: 16,
+                              left: 0,
+                              right: 0,
+                              child: Row(
+                                mainAxisAlignment: MainAxisAlignment.center,
+                                children: List.generate(_mediaUrls.length, (i) {
+                                  return AnimatedContainer(
+                                    duration: const Duration(milliseconds: 300),
+                                    margin: const EdgeInsets.symmetric(
+                                      horizontal: 4,
+                                    ),
+                                    width: _currentPage == i ? 12 : 8,
+                                    height: _currentPage == i ? 12 : 8,
+                                    decoration: BoxDecoration(
+                                      color: _currentPage == i
+                                          ? Colors.white
+                                          : Colors.white.withValues(alpha: 0.5),
+                                      shape: BoxShape.circle,
+                                      boxShadow: const [
+                                        BoxShadow(
+                                          color: Colors.black45,
+                                          blurRadius: 4,
+                                        ),
+                                      ],
+                                    ),
+                                  );
+                                }),
+                              ),
                             ),
-                          ),
-                      ],
+                        ],
+                      ),
                     ),
                   ),
 
@@ -1723,11 +1731,12 @@ class _SpatialDeckCard extends ConsumerWidget {
                   ClipRRect(
                     borderRadius: BorderRadius.circular(20),
                     child: Container(
-                      constraints: const BoxConstraints(maxHeight: 340),
+                      constraints: const BoxConstraints(maxHeight: 380, minHeight: 200),
                       width: double.infinity,
+                      color: Colors.black.withValues(alpha: 0.8),
                       child: FirebaseCachedNetworkImage(
                         imageUrl: mediaUrls.first,
-                        fit: BoxFit.cover,
+                        fit: BoxFit.contain,
                       ),
                     ),
                   ),
