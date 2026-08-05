@@ -125,6 +125,12 @@ async def create_post(
       A human moderator later approves (post becomes public) or rejects
       (post becomes a draft the author can edit).
     """
+    if not payload.media_urls:
+        raise HTTPException(
+            status_code=400,
+            detail={"code": "VALIDATION_ERROR", "message": "Posts cannot be text-only. An image or video is required."},
+        )
+
     try:
         post = await posts_service.create_post(
             author_uid=claims["uid"],
@@ -133,6 +139,11 @@ async def create_post(
             media_type=payload.media_type,
             submit_for_review=payload.submit_for_review,
         )
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail={"code": "VALIDATION_ERROR", "message": str(exc)},
+        ) from exc
     except posts_service.PostBlocked as exc:
         return _moderation_flagged_response(exc.matches, exc.reason)
 

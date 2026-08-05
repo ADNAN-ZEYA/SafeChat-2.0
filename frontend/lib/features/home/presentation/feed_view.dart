@@ -118,7 +118,12 @@ class _FeedTab extends ConsumerWidget {
           child: CustomScrollView(
             slivers: [
               SliverPadding(
-                padding: const EdgeInsets.all(12),
+                padding: const EdgeInsets.only(
+                  left: 12,
+                  right: 12,
+                  top: 12,
+                  bottom: 100,
+                ),
                 sliver: layoutMode == FeedLayoutMode.grid
                     ? _buildGridView(context, posts)
                     : _buildCardView(context, posts),

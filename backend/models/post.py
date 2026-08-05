@@ -36,8 +36,8 @@ class Post(BaseModel):
 
 class CreatePostRequest(BaseModel):
     text: str = Field(..., min_length=1, max_length=2000)
-    media_urls: list[str] = Field(default_factory=list, max_length=10)
-    media_type: str = "text"
+    media_urls: list[str] = Field(..., min_length=1, max_length=10)
+    media_type: str = "image"
     # When True, knowingly submit flagged content for human verification
     # (stored as pending_review) instead of being rejected with a 422.
     submit_for_review: bool = False

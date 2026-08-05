@@ -242,6 +242,7 @@ class ProfileView extends ConsumerWidget {
             ),
             const SliverToBoxAdapter(child: SizedBox(height: 24)),
             _buildGrid(ref, user?.uid ?? ''),
+            const SliverToBoxAdapter(child: SizedBox(height: 100)),
           ],
         ),
       ],
@@ -371,6 +372,7 @@ class ProfileView extends ConsumerWidget {
           ),
         ),
         _buildGrid(ref, user?.uid ?? ''),
+        const SliverToBoxAdapter(child: SizedBox(height: 100)),
       ],
     );
   }

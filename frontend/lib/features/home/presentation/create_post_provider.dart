@@ -82,6 +82,15 @@ class CreatePostNotifier extends Notifier<CreatePostState> {
   }
 
   Future<SubmitOutcome?> _send({required bool submitForReview}) async {
+    if (state.selectedMedia.isEmpty) {
+      state = state.copyWith(
+        submissionState: AsyncError(
+          Exception('Posts cannot be text-only. Please select an image or video to post.'),
+          StackTrace.current,
+        ),
+      );
+      return null;
+    }
     state = state.copyWith(submissionState: const AsyncLoading());
     try {
       final repo = ref.read(postRepositoryProvider);

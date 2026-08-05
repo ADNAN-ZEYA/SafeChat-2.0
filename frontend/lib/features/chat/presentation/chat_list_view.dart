@@ -131,6 +131,7 @@ class _ChatListViewState extends ConsumerState<ChatListView>
             }
 
             return ListView.builder(
+              padding: const EdgeInsets.only(bottom: 100),
               itemCount: filteredChats.length,
               itemBuilder: (context, index) {
                 final doc = filteredChats[index];
