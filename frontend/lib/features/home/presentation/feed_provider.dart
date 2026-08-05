@@ -1,5 +1,4 @@
-// frontend/lib/features/home/presentation/feed_provider.dart
-
+import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../data/feed_post_model.dart';
 import '../data/post_repository.dart';
@@ -34,3 +33,13 @@ class FeedPostsNotifier extends AsyncNotifier<List<FeedPost>> {
     state = AsyncData([post, ...current]);
   }
 }
+
+/// Live stats for a post directly from Firestore (like_count, comment_count, view_count).
+final postStatsProvider =
+    StreamProvider.family<Map<String, dynamic>?, String>((ref, postId) {
+  return FirebaseFirestore.instance
+      .collection('posts')
+      .doc(postId)
+      .snapshots()
+      .map((snap) => snap.data());
+});

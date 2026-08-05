@@ -557,54 +557,64 @@ class _ListPostCard extends ConsumerWidget {
           ),
           Padding(
             padding: const EdgeInsets.only(left: 16, right: 16, bottom: 16),
-            child: Row(
-              mainAxisAlignment: MainAxisAlignment.spaceBetween,
-              children: [
-                Row(
+            child: Consumer(
+              builder: (context, ref, child) {
+                final statsAsync = ref.watch(postStatsProvider(post.id));
+                final isLikedAsync = ref.watch(isLikedProvider(post.id));
+                final isLiked = isLikedAsync.value ?? false;
+
+                final statsData = statsAsync.value;
+                final liveLikeCount =
+                    statsData?['like_count'] as int? ?? post.likeCount;
+                final liveCommentCount =
+                    statsData?['comment_count'] as int? ?? post.commentCount;
+                final liveViewCount =
+                    statsData?['view_count'] as int? ?? post.viewCount;
+
+                return Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
                   children: [
-                    const Icon(
-                      Icons.favorite_border,
-                      size: 16,
-                      color: Colors.grey,
+                    Row(
+                      children: [
+                        Icon(
+                          isLiked ? Icons.favorite : Icons.favorite_border,
+                          size: 16,
+                          color: isLiked ? Colors.red : Colors.grey,
+                        ),
+                        const SizedBox(width: 4),
+                        Text(
+                          '$liveLikeCount',
+                          style: TextStyle(
+                            color: isLiked ? Colors.red : Colors.grey,
+                          ),
+                        ),
+                        const SizedBox(width: 16),
+                        const Icon(
+                          Icons.chat_bubble_outline,
+                          size: 16,
+                          color: Colors.grey,
+                        ),
+                        const SizedBox(width: 4),
+                        Text(
+                          '$liveCommentCount',
+                          style: const TextStyle(color: Colors.grey),
+                        ),
+                        const SizedBox(width: 16),
+                        const Icon(
+                          Icons.remove_red_eye_outlined,
+                          size: 16,
+                          color: Colors.grey,
+                        ),
+                        const SizedBox(width: 4),
+                        Text(
+                          '$liveViewCount',
+                          style: const TextStyle(color: Colors.grey),
+                        ),
+                      ],
                     ),
-                    const SizedBox(width: 4),
-                    Text(
-                      '${post.likeCount}',
-                      style: const TextStyle(color: Colors.grey),
-                    ),
-                    const SizedBox(width: 16),
-                    const Icon(
-                      Icons.chat_bubble_outline,
-                      size: 16,
-                      color: Colors.grey,
-                    ),
-                    const SizedBox(width: 4),
-                    Text(
-                      '${post.commentCount}',
-                      style: const TextStyle(color: Colors.grey),
-                    ),
-                    const SizedBox(width: 16),
-                    const Icon(
-                      Icons.remove_red_eye_outlined,
-                      size: 16,
-                      color: Colors.grey,
-                    ),
-                    const SizedBox(width: 4),
-                    Text(
-                      '${post.viewCount}',
-                      style: const TextStyle(color: Colors.grey),
-                    ),
-                  ],
-                ),
-                Row(
-                  children: [
-                    Consumer(
-                      builder: (context, ref, child) {
-                        final isLikedAsync = ref.watch(
-                          isLikedProvider(post.id),
-                        );
-                        final isLiked = isLikedAsync.value ?? false;
-                        return FloatingActionButton.small(
+                    Row(
+                      children: [
+                        FloatingActionButton.small(
                           heroTag: 'like_${post.id}',
                           onPressed: () {
                             HapticFeedback.lightImpact();
@@ -635,19 +645,19 @@ class _ListPostCard extends ConsumerWidget {
                                     duration: 200.ms,
                                     curve: Curves.easeOutBack,
                                   ),
-                        );
-                      },
-                    ),
-                    const SizedBox(width: 8),
-                    FloatingActionButton.small(
-                      heroTag: 'comment_${post.id}',
-                      onPressed: () =>
-                          showCommentsBottomSheet(context, post.id),
-                      child: const Icon(Icons.chat_bubble_outline),
+                        ),
+                        const SizedBox(width: 8),
+                        FloatingActionButton.small(
+                          heroTag: 'comment_${post.id}',
+                          onPressed: () =>
+                              showCommentsBottomSheet(context, post.id),
+                          child: const Icon(Icons.chat_bubble_outline),
+                        ),
+                      ],
                     ),
                   ],
-                ),
-              ],
+                );
+              },
             ),
           ),
         ],
@@ -1142,14 +1152,24 @@ void showCommentsBottomSheet(BuildContext context, String postId) {
             Expanded(
               child: Consumer(
                 builder: (context, ref, child) {
+                  final streamAsync =
+                      ref.watch(approvedCommentsStreamProvider(postId));
                   final commentsAsync = ref.watch(commentsProvider(postId));
-                  return commentsAsync.when(
-                    data: (comments) {
-                      if (comments.isEmpty) {
-                        return const Center(child: Text('No comments yet.'));
-                      }
-                      return ListView.builder(
-                        itemCount: comments.length,
+                  final comments =
+                      streamAsync.value ?? commentsAsync.value ?? [];
+                  final isLoading =
+                      streamAsync.isLoading && commentsAsync.isLoading;
+
+                  if (isLoading) {
+                    return const Center(child: CircularProgressIndicator());
+                  }
+
+                  if (comments.isEmpty) {
+                    return const Center(child: Text('No comments yet.'));
+                  }
+
+                  return ListView.builder(
+                    itemCount: comments.length,
                         itemBuilder: (context, index) {
                           final comment = comments[index];
                           return ListTile(
@@ -1286,11 +1306,6 @@ void showCommentsBottomSheet(BuildContext context, String postId) {
                           );
                         },
                       );
-                    },
-                    loading: () =>
-                        const Center(child: CircularProgressIndicator()),
-                    error: (err, st) => Center(child: Text('Error: $err')),
-                  );
                 },
               ),
             ),

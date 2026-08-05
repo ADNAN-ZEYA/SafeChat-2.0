@@ -6,6 +6,8 @@ import '../../moderation/data/moderation_models.dart';
 import '../../moderation/presentation/moderation_highlight.dart';
 import '../../../shared/widgets/empty_state.dart';
 import 'admin_providers.dart';
+import '../../profile/presentation/content_status_view.dart';
+import '../../home/presentation/feed_provider.dart';
 
 /// Admin review portal: lists content awaiting human verification and lets a
 /// moderator approve (publish) or reject (hide + reason) each item.
@@ -69,6 +71,9 @@ class AdminModerationView extends ConsumerWidget {
     try {
       await dio.post('/api/v1/admin/moderation/queue/$id/approve');
       ref.invalidate(moderationQueueProvider);
+      ref.invalidate(myAppealsProvider);
+      ref.invalidate(feedPostsProvider('global'));
+      ref.invalidate(feedPostsProvider('following'));
       if (context.mounted) {
         ScaffoldMessenger.of(
           context,
@@ -93,6 +98,9 @@ class AdminModerationView extends ConsumerWidget {
         data: {'reason': reason},
       );
       ref.invalidate(moderationQueueProvider);
+      ref.invalidate(myAppealsProvider);
+      ref.invalidate(feedPostsProvider('global'));
+      ref.invalidate(feedPostsProvider('following'));
       if (context.mounted) {
         ScaffoldMessenger.of(
           context,
