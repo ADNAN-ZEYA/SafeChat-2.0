@@ -1,4 +1,4 @@
-﻿# backend/services/messages.py
+# backend/services/messages.py
 """Direct-messaging service layer.
 
 Chats live at /chats/{chat_id}.
@@ -84,6 +84,25 @@ class MessageBlocked(Exception):
         self.matches = matches or []
         self.categories = categories or []
         super().__init__(reason or "Message blocked by content moderation.")
+
+
+class SafeChatProtectionBlocked(Exception):
+    """Raised when a recipient has SafeChat Protection enabled and an incoming
+    message contains inappropriate or harmful content.
+    """
+
+    def __init__(
+        self,
+        layer: str | None = None,
+        reason: str | None = None,
+        matches: list[Match] | None = None,
+        categories: list[str] | None = None,
+    ) -> None:
+        self.layer = layer
+        self.reason = reason or "This user has SafeChat Protection enabled. Inappropriate messages are not allowed to be sent to this user."
+        self.matches = matches or []
+        self.categories = categories or []
+        super().__init__(self.reason)
 
 
 class InvalidCiphertext(Exception):
@@ -376,24 +395,10 @@ async def send_message(
     sender_uid: str,
     text: str,
     image_url: str | None = None,
+    media_type: str = "text",
+    metadata: dict[str, Any] | None = None,
     submit_for_review: bool = False,
 ) -> Message:
-    """Moderate then persist a message.
-
-    - Clean -> status "approved"; chat preview updated; FCM sent to recipient.
-    - Flagged + submit_for_review=False -> raises ``MessageBlocked`` (route 422
-      with the flagged spans).
-    - Flagged + submit_for_review=True -> status "pending_review"; queued for
-      review; NOT delivered (chat preview untouched, no FCM) until an admin
-      approves.
-
-    Raises:
-        ChatNotFound: if the chat document does not exist.
-        NotAuthorized: if sender_uid is not a participant in the chat.
-        MessagingNotAllowed: if a block or the recipient's DM privacy setting
-            forbids messaging (SEC-05).
-        MessageBlocked: flagged text when the sender has not opted into review.
-    """
     chat_snap = await asyncio.to_thread(_chat_ref(chat_id).get)
     if not chat_snap.exists:
         raise ChatNotFound(chat_id)
@@ -407,6 +412,23 @@ async def send_message(
     )
     if recipient_for_guard is not None:
         await _ensure_can_message(sender_uid, recipient_for_guard)
+
+        # Check if recipient has SafeChat Protection enabled
+        recipient_snap = await asyncio.to_thread(
+            db.collection(USERS_COLLECTION).document(recipient_for_guard).get
+        )
+        if recipient_snap.exists:
+            rec_dict = recipient_snap.to_dict() or {}
+            safechat_protection = rec_dict.get("safechat_protection", True)
+            if safechat_protection and media_type in ("text", "link"):
+                text_res = await moderate_text(text)
+                if text_res.blocked:
+                    raise SafeChatProtectionBlocked(
+                        layer=text_res.layer,
+                        reason="This user has SafeChat Protection enabled. Inappropriate messages are not allowed to be sent to this user.",
+                        matches=text_res.matches,
+                        categories=[m.category for m in text_res.matches],
+                    )
 
     is_trusted = chat_data.get("encryption_mode", "pending") == "trusted"
 
@@ -429,6 +451,8 @@ async def send_message(
             "sender_uid": sender_uid,
             "text": text,
             "image_url": image_url,
+            "media_type": media_type,
+            "metadata": metadata or {},
             "status": "approved",
             "encrypted": True,
             "read_at": None,
@@ -503,6 +527,8 @@ async def send_message(
         "sender_uid": sender_uid,
         "text": text,
         "image_url": image_url,
+        "media_type": media_type,
+        "metadata": metadata or {},
         "status": initial_status,
         **moderation_meta,
         "read_at": None,
@@ -797,3 +823,23 @@ async def set_message_status(
 
     snap2 = await asyncio.to_thread(_message_ref(chat_id, message_id).get)
     return Message.model_validate(snap2.to_dict())
+
+
+async def update_presence(
+    chat_id: str,
+    uid: str,
+    is_typing: bool = False,
+    is_viewing: bool = False,
+) -> None:
+    """Update participant presence state in Firestore under /chats/{chat_id}/presence/{uid}."""
+    ref = db.collection(CHATS_COLLECTION).document(chat_id).collection("presence").document(uid)
+    await asyncio.to_thread(
+        ref.set,
+        {
+            "uid": uid,
+            "is_typing": is_typing,
+            "is_viewing": is_viewing,
+            "last_active": firestore.SERVER_TIMESTAMP,
+        },
+        merge=True,
+    )

@@ -108,12 +108,12 @@ def test_size_cap_allows_image_under_10mb(monkeypatch: pytest.MonkeyPatch) -> No
     assert result.object_path.endswith(".jpg")
 
 
-def test_size_cap_rejects_image_over_10mb(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_size_cap_rejects_image_over_25mb(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(storage_service, "bucket", _FakeBucket())
 
     with pytest.raises(storage_service.FileTooLarge):
         storage_service.generate_upload_url(
-            "uid-1", "image/jpeg", "post", size_bytes=11 * 1024 * 1024
+            "uid-1", "image/jpeg", "post", size_bytes=26 * 1024 * 1024
         )
 
 

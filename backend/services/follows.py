@@ -13,9 +13,11 @@ import asyncio
 from google.cloud import firestore
 from google.cloud.firestore import DocumentReference, FieldFilter, Transaction
 
+from core.cache import TTLCache
 from core.firebase import db
 
 FOLLOWS_COLLECTION = "follows"
+_following_cache = TTLCache(default_ttl_seconds=60.0)
 
 
 class CannotFollowSelf(Exception):
@@ -68,6 +70,7 @@ async def follow_user(follower_uid: str, followee_uid: str) -> None:
         transaction.update(followee_ref, {"follower_count": firestore.Increment(1)})
 
     await asyncio.to_thread(_txn, db.transaction())
+    _following_cache.invalidate(follower_uid)
 
 
 async def unfollow_user(follower_uid: str, followee_uid: str) -> None:
@@ -91,6 +94,7 @@ async def unfollow_user(follower_uid: str, followee_uid: str) -> None:
         transaction.update(followee_ref, {"follower_count": firestore.Increment(-1)})
 
     await asyncio.to_thread(_txn, db.transaction())
+    _following_cache.invalidate(follower_uid)
 
 
 async def is_following(follower_uid: str, followee_uid: str) -> bool:
@@ -127,6 +131,9 @@ async def get_followers(uid: str) -> list[str]:
 
 async def get_following(uid: str) -> list[str]:
     """Return the list of uids that uid follows."""
+    cached = _following_cache.get(uid)
+    if cached is not None:
+        return list(cached)
 
     def _query() -> list[str]:
         stream = (
@@ -139,4 +146,7 @@ async def get_following(uid: str) -> list[str]:
             for snap in stream
         ]
 
-    return await asyncio.to_thread(_query)
+    res = await asyncio.to_thread(_query)
+    _following_cache.set(uid, res)
+    return res
+

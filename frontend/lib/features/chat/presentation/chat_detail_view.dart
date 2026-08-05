@@ -4,12 +4,15 @@ import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:image_picker/image_picker.dart';
 import '../../../../core/network/dio_client.dart';
+import '../../../../shared/widgets/firebase_image.dart';
 import '../../moderation/data/moderation_models.dart';
 import '../../moderation/presentation/flagged_content_dialog.dart';
 import '../../profile/presentation/follow_providers.dart';
 import '../data/encryption_service.dart';
 import 'chat_encryption_providers.dart';
+import 'presence_provider.dart';
 
 class ChatDetailView extends ConsumerStatefulWidget {
   final String chatId;
@@ -30,42 +33,85 @@ class ChatDetailView extends ConsumerStatefulWidget {
 class _ChatDetailViewState extends ConsumerState<ChatDetailView> {
   final TextEditingController _messageController = TextEditingController();
   SecretKey? _sharedKey;
+  bool _isUploading = false;
 
   @override
   void initState() {
     super.initState();
     _markChatRead();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      ref.read(presenceControllerProvider).setPresence(
+            widget.chatId,
+            isTyping: false,
+            isViewing: true,
+          );
+    });
   }
 
-  /// Resets this user's unread badge and stamps read receipts. Fire-and-forget:
-  /// a failure only means the badge clears on the next successful open.
   Future<void> _markChatRead() async {
     try {
       await ref.read(dioProvider).post('/api/v1/chats/${widget.chatId}/read');
-    } catch (_) {
-      // Non-fatal — the badge will reset on a later open.
-    }
+    } catch (_) {}
   }
 
   @override
   void dispose() {
+    ref.read(presenceControllerProvider).setPresence(
+          widget.chatId,
+          isTyping: false,
+          isViewing: false,
+        );
     _messageController.dispose();
     super.dispose();
   }
 
-  Future<void> _sendMessage() async {
+  void _showSafeChatProtectionDialog(String message) {
+    showDialog<void>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
+        title: const Row(
+          children: [
+            Icon(Icons.shield_outlined, color: Color(0xFF8E2DE2), size: 28),
+            SizedBox(width: 10),
+            Expanded(
+              child: Text(
+                'SafeChat Protection Active',
+                style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+              ),
+            ),
+          ],
+        ),
+        content: Text(
+          message.isNotEmpty
+              ? message
+              : 'This user has SafeChat Protection enabled. Inappropriate or harmful messages cannot be sent to this user.',
+          style: const TextStyle(fontSize: 14, height: 1.4),
+        ),
+        actions: [
+          FilledButton(
+            style: FilledButton.styleFrom(
+              backgroundColor: const Color(0xFF8E2DE2),
+            ),
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('Got It'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _sendMessage({
+    String? mediaUrl,
+    String mediaType = 'text',
+    Map<String, dynamic>? metadata,
+  }) async {
     final text = _messageController.text.trim();
-    if (text.isEmpty) return;
+    if (text.isEmpty && mediaUrl == null) return;
 
     final messenger = ScaffoldMessenger.of(context);
     final dio = ref.read(dioProvider);
 
-    // SM-01: await the authoritative mode instead of reading the stream's
-    // possibly-not-yet-emitted value. Defaulting to 'pending' on a fresh
-    // screen could send PLAINTEXT into a trusted chat (which the backend
-    // stamps `encrypted: true` and skips moderation for). `.future` resolves
-    // immediately once the stream has emitted; otherwise it waits for the
-    // first snapshot. If the mode cannot be determined, refuse to send.
     final String mode;
     try {
       mode = await ref.read(chatEncryptionModeProvider(widget.chatId).future);
@@ -73,8 +119,7 @@ class _ChatDetailViewState extends ConsumerState<ChatDetailView> {
       messenger.showSnackBar(
         const SnackBar(
           content: Text(
-            'Could not verify this chat\'s SafeChat Mode — message not sent. '
-            'Check your connection and try again.',
+            'Could not verify this chat\'s SafeChat Mode — message not sent.',
           ),
         ),
       );
@@ -86,9 +131,7 @@ class _ChatDetailViewState extends ConsumerState<ChatDetailView> {
       if (sharedKey == null) {
         messenger.showSnackBar(
           const SnackBar(
-            content: Text(
-              'Encryption isn\'t ready yet for this chat. Try again shortly.',
-            ),
+            content: Text('Encryption isn\'t ready yet. Try again shortly.'),
           ),
         );
         return;
@@ -96,12 +139,23 @@ class _ChatDetailViewState extends ConsumerState<ChatDetailView> {
       try {
         final ciphertext = await ref
             .read(encryptionServiceProvider)
-            .encryptText(text, sharedKey);
+            .encryptText(text.isNotEmpty ? text : '[Media]', sharedKey);
         await dio.post(
           '/api/v1/chats/${widget.chatId}/messages',
-          data: {'text': ciphertext, 'submit_for_review': false},
+          data: {
+            'text': ciphertext,
+            'image_url': mediaUrl,
+            'media_type': mediaType,
+            'metadata': metadata ?? {},
+            'submit_for_review': false,
+          },
         );
         _messageController.clear();
+        ref.read(presenceControllerProvider).setPresence(
+              widget.chatId,
+              isTyping: false,
+              isViewing: true,
+            );
       } catch (e) {
         messenger.showSnackBar(
           SnackBar(content: Text('Failed to send message: $e')),
@@ -111,10 +165,15 @@ class _ChatDetailViewState extends ConsumerState<ChatDetailView> {
     }
 
     Future<Response<dynamic>> post({required bool submitForReview}) {
-      // All writes go through the backend so moderation runs.
       return dio.post(
         '/api/v1/chats/${widget.chatId}/messages',
-        data: {'text': text, 'submit_for_review': submitForReview},
+        data: {
+          'text': text.isNotEmpty ? text : (mediaUrl ?? 'Media'),
+          'image_url': mediaUrl,
+          'media_type': mediaType,
+          'metadata': metadata ?? {},
+          'submit_for_review': submitForReview,
+        },
         options: Options(
           validateStatus: (s) =>
               s != null && ((s >= 200 && s < 300) || s == 422),
@@ -125,7 +184,24 @@ class _ChatDetailViewState extends ConsumerState<ChatDetailView> {
     try {
       final response = await post(submitForReview: false);
       if (response.statusCode != 422) {
-        _messageController.clear(); // delivered — the stream will show it
+        _messageController.clear();
+        ref.read(presenceControllerProvider).setPresence(
+              widget.chatId,
+              isTyping: false,
+              isViewing: true,
+            );
+        return;
+      }
+
+      final errorData = response.data as Map<String, dynamic>?;
+      final errObj = (errorData?['error'] as Map<String, dynamic>?) ??
+          (errorData?['detail'] as Map<String, dynamic>?);
+      final code = errObj?['code'];
+
+      if (code == 'SAFECHAT_PROTECTION_BLOCKED') {
+        final msg = errObj?['message'] as String? ??
+            'This user has SafeChat Protection enabled. Inappropriate or harmful messages cannot be sent to this user.';
+        _showSafeChatProtectionDialog(msg);
         return;
       }
 
@@ -148,11 +224,139 @@ class _ChatDetailViewState extends ConsumerState<ChatDetailView> {
           ),
         ),
       );
+    } on DioException catch (e) {
+      final errorData = e.response?.data as Map<String, dynamic>?;
+      final errObj = (errorData?['error'] as Map<String, dynamic>?) ??
+          (errorData?['detail'] as Map<String, dynamic>?);
+      final code = errObj?['code'];
+      if (code == 'SAFECHAT_PROTECTION_BLOCKED') {
+        final msg = errObj?['message'] as String? ??
+            'This user has SafeChat Protection enabled. Inappropriate or harmful messages cannot be sent to this user.';
+        _showSafeChatProtectionDialog(msg);
+        return;
+      }
+      messenger.showSnackBar(
+        SnackBar(content: Text('Failed to send message: ${e.message}')),
+      );
     } catch (e) {
       messenger.showSnackBar(
         SnackBar(content: Text('Failed to send message: $e')),
       );
     }
+  }
+
+  Future<void> _pickAndUploadMedia(ImageSource source, String type) async {
+    final picker = ImagePicker();
+    XFile? file;
+    if (type == 'video') {
+      file = await picker.pickVideo(source: source);
+    } else {
+      file = await picker.pickImage(
+        source: source,
+        imageQuality: 75, // Compress image by ~25-30% on client before send
+      );
+    }
+
+    if (file == null) return;
+
+    setState(() => _isUploading = true);
+    final dio = ref.read(dioProvider);
+
+    try {
+      final bytes = await file.readAsBytes();
+      final length = bytes.length;
+      final contentType = type == 'video' ? 'video/mp4' : 'image/jpeg';
+
+      final signRes = await dio.post('/api/v1/uploads/sign', data: {
+        'content_type': contentType,
+        'purpose': 'message',
+        'size_bytes': length,
+      });
+
+      final uploadData = signRes.data['data'] as Map<String, dynamic>;
+      final uploadUrl = uploadData['upload_url'] as String;
+      final objectPath = uploadData['object_path'] as String;
+
+      await Dio().put(
+        uploadUrl,
+        data: bytes,
+        options: Options(headers: {'Content-Type': contentType}),
+      );
+
+      final mediaUrl = 'https://storage.googleapis.com/$objectPath';
+      await _sendMessage(
+        mediaUrl: mediaUrl,
+        mediaType: type,
+        metadata: {'file_name': file.name, 'size_bytes': length},
+      );
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Media upload failed: $e')),
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _isUploading = false);
+    }
+  }
+
+  void _showAttachmentSheet() {
+    showModalBottomSheet(
+      context: context,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+      ),
+      builder: (ctx) => Padding(
+        padding: const EdgeInsets.all(20),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Container(
+              width: 40,
+              height: 4,
+              decoration: BoxDecoration(
+                color: Colors.grey.shade400,
+                borderRadius: BorderRadius.circular(2),
+              ),
+            ),
+            const SizedBox(height: 20),
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+              children: [
+                _AttachmentTile(
+                  icon: Icons.photo_library_outlined,
+                  color: Colors.purple,
+                  label: 'Gallery Photo',
+                  onTap: () {
+                    Navigator.pop(ctx);
+                    _pickAndUploadMedia(ImageSource.gallery, 'image');
+                  },
+                ),
+                _AttachmentTile(
+                  icon: Icons.camera_alt_outlined,
+                  color: Colors.blue,
+                  label: 'Camera Photo',
+                  onTap: () {
+                    Navigator.pop(ctx);
+                    _pickAndUploadMedia(ImageSource.camera, 'image');
+                  },
+                ),
+                _AttachmentTile(
+                  icon: Icons.videocam_outlined,
+                  color: Colors.redAccent,
+                  label: 'Video',
+                  onTap: () {
+                    Navigator.pop(ctx);
+                    _pickAndUploadMedia(ImageSource.gallery, 'video');
+                  },
+                ),
+              ],
+            ),
+            const SizedBox(height: 16),
+          ],
+        ),
+      ),
+    );
   }
 
   Future<void> _confirmToggleSafeChatMode(String currentMode) async {
@@ -195,8 +399,6 @@ class _ChatDetailViewState extends ConsumerState<ChatDetailView> {
         data: {'mode': targetMode},
       );
     } on DioException catch (e) {
-      // Defensively handled even though the button is gated by mutual-follow
-      // status — e.g. the other user unfollowed from another session.
       if (e.response?.statusCode == 403) {
         messenger.showSnackBar(
           const SnackBar(
@@ -223,10 +425,6 @@ class _ChatDetailViewState extends ConsumerState<ChatDetailView> {
       return const Scaffold(body: Center(child: Text('Not logged in')));
     }
 
-    // SM-02: derive the shared key reactively. Watching the provider means a
-    // peer who publishes/rotates their public key mid-session triggers a
-    // rebuild and re-derivation here, so SafeChat Mode becomes available
-    // without reopening the screen (the old one-shot initState fetch did not).
     final derivedKey = ref
         .watch(chatSharedKeyProvider((myUid: uid, otherUid: widget.otherUid)))
         .value;
@@ -240,22 +438,97 @@ class _ChatDetailViewState extends ConsumerState<ChatDetailView> {
       orElse: () => false,
     );
 
+    // Watch Presence State
+    final presenceAsync = ref.watch(chatPresenceProvider(widget.chatId));
+    final presenceMap = presenceAsync.value ?? {};
+    final otherPresence = presenceMap[widget.otherUid];
+    final isOtherTyping = otherPresence?.isTyping == true;
+    final isOtherViewing = otherPresence?.isViewing == true;
+
     return Scaffold(
       appBar: AppBar(
-        title: Text(widget.otherUserName),
+        titleSpacing: 0,
+        title: Row(
+          children: [
+            CircleAvatar(
+              radius: 18,
+              backgroundColor: const Color(0xFF8E2DE2).withValues(alpha: 0.2),
+              child: Text(
+                widget.otherUserName.isNotEmpty
+                    ? widget.otherUserName[0].toUpperCase()
+                    : '?',
+                style: const TextStyle(
+                  color: Color(0xFF8E2DE2),
+                  fontWeight: FontWeight.bold,
+                  fontSize: 16,
+                ),
+              ),
+            ),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    widget.otherUserName,
+                    style: const TextStyle(
+                      fontSize: 16,
+                      fontWeight: FontWeight.bold,
+                    ),
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                  if (isOtherTyping)
+                    const Text(
+                      '💬 typing...',
+                      style: TextStyle(
+                        fontSize: 12,
+                        color: Color(0xFF8E2DE2),
+                        fontWeight: FontWeight.w600,
+                      ),
+                    )
+                  else if (isOtherViewing)
+                    Row(
+                      children: const [
+                        Icon(Icons.circle, size: 8, color: Colors.greenAccent),
+                        SizedBox(width: 4),
+                        Text(
+                          'Active in chat',
+                          style: TextStyle(fontSize: 11, color: Colors.greenAccent),
+                        ),
+                      ],
+                    ),
+                ],
+              ),
+            ),
+          ],
+        ),
         actions: [
           if (isMutualFollow)
             ref
                 .watch(chatEncryptionModeProvider(widget.chatId))
                 .when(
-                  data: (mode) => IconButton(
-                    icon: Icon(
-                      mode == 'trusted' ? Icons.lock : Icons.lock_open,
+                  data: (mode) => Container(
+                    margin: const EdgeInsets.only(right: 12),
+                    decoration: BoxDecoration(
+                      color: (mode == 'trusted'
+                              ? Colors.green
+                              : const Color(0xFF8E2DE2))
+                          .withValues(alpha: 0.15),
+                      shape: BoxShape.circle,
                     ),
-                    tooltip: mode == 'trusted'
-                        ? 'SafeChat Mode is OFF — messages are end-to-end encrypted'
-                        : 'SafeChat Mode is ON — messages are moderated',
-                    onPressed: () => _confirmToggleSafeChatMode(mode),
+                    child: IconButton(
+                      icon: Icon(
+                        mode == 'trusted' ? Icons.lock : Icons.shield_outlined,
+                        color: mode == 'trusted'
+                            ? Colors.greenAccent
+                            : const Color(0xFF8E2DE2),
+                        size: 20,
+                      ),
+                      tooltip: mode == 'trusted'
+                          ? 'SafeChat Mode OFF — E2E Encrypted'
+                          : 'SafeChat Protection ON',
+                      onPressed: () => _confirmToggleSafeChatMode(mode),
+                    ),
                   ),
                   loading: () => const SizedBox.shrink(),
                   error: (_, _) => const SizedBox.shrink(),
@@ -264,6 +537,8 @@ class _ChatDetailViewState extends ConsumerState<ChatDetailView> {
       ),
       body: Column(
         children: [
+          if (_isUploading)
+            const LinearProgressIndicator(color: Color(0xFF8E2DE2)),
           Expanded(
             child: StreamBuilder<QuerySnapshot>(
               stream: FirebaseFirestore.instance
@@ -276,8 +551,9 @@ class _ChatDetailViewState extends ConsumerState<ChatDetailView> {
                 if (snapshot.hasError) {
                   return Center(child: Text('Error: ${snapshot.error}'));
                 }
-                if (snapshot.connectionState == ConnectionState.waiting) {
-                  return const Center(child: CircularProgressIndicator());
+                if (snapshot.connectionState == ConnectionState.waiting &&
+                    !snapshot.hasData) {
+                  return const SizedBox.shrink(); // Zero spinner flicker
                 }
 
                 final messages = snapshot.data?.docs ?? [];
@@ -285,16 +561,16 @@ class _ChatDetailViewState extends ConsumerState<ChatDetailView> {
                 return ListView.builder(
                   reverse: true,
                   itemCount: messages.length,
-                  padding: const EdgeInsets.all(16),
+                  padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
                   itemBuilder: (context, index) {
                     final data = messages[index].data() as Map<String, dynamic>;
                     final isMe = data['sender_uid'] == uid;
                     final text = data['text'] as String? ?? '';
+                    final imageUrl = data['image_url'] as String?;
+                    final mediaType = data['media_type'] as String? ?? 'text';
                     final status = data['status'] as String? ?? 'approved';
                     final isEncrypted = data['encrypted'] as bool? ?? false;
 
-                    // The recipient only ever sees delivered (approved) messages.
-                    // The sender additionally sees their own pending/rejected ones.
                     if (!isMe && status != 'approved') {
                       return const SizedBox.shrink();
                     }
@@ -302,6 +578,8 @@ class _ChatDetailViewState extends ConsumerState<ChatDetailView> {
                     return _buildMessageBubble(
                       key: ValueKey(messages[index].id),
                       rawText: text,
+                      imageUrl: imageUrl,
+                      mediaType: mediaType,
                       isEncrypted: isEncrypted,
                       isMe: isMe,
                       status: status,
@@ -312,31 +590,152 @@ class _ChatDetailViewState extends ConsumerState<ChatDetailView> {
               },
             ),
           ),
-          Padding(
-            padding: const EdgeInsets.all(8.0),
-            child: Row(
-              children: [
-                Expanded(
-                  child: TextField(
-                    controller: _messageController,
-                    decoration: InputDecoration(
-                      hintText: 'Type a message...',
-                      border: OutlineInputBorder(
-                        borderRadius: BorderRadius.circular(24),
-                      ),
-                      contentPadding: const EdgeInsets.symmetric(
-                        horizontal: 16,
+
+          // Snapchat-Style Active Viewing / Typing Bubble at Bottom
+          if (isOtherTyping || isOtherViewing)
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 4),
+              child: Row(
+                children: [
+                  Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                    decoration: BoxDecoration(
+                      color: Theme.of(context).colorScheme.surfaceContainerHighest,
+                      borderRadius: BorderRadius.circular(16),
+                    ),
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        const Icon(Icons.face_outlined, size: 16, color: Color(0xFF8E2DE2)),
+                        const SizedBox(width: 6),
+                        Text(
+                          isOtherTyping
+                              ? '${widget.otherUserName} is typing...'
+                              : '${widget.otherUserName} is in chat 👁️',
+                          style: const TextStyle(fontSize: 12, fontWeight: FontWeight.bold),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+            ),
+
+          // Modern Seamless Input Bar
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+            decoration: BoxDecoration(
+              color: Theme.of(context).scaffoldBackgroundColor,
+              border: Border(
+                top: BorderSide(
+                  color: Theme.of(context).dividerColor.withValues(alpha: 0.15),
+                  width: 1,
+                ),
+              ),
+            ),
+            child: SafeArea(
+              top: false,
+              child: Row(
+                children: [
+                  // Attachment Button
+                  Material(
+                    color: Colors.transparent,
+                    child: InkWell(
+                      borderRadius: BorderRadius.circular(24),
+                      onTap: _showAttachmentSheet,
+                      child: Container(
+                        padding: const EdgeInsets.all(10),
+                        decoration: BoxDecoration(
+                          shape: BoxShape.circle,
+                          color: const Color(0xFF8E2DE2).withValues(alpha: 0.15),
+                        ),
+                        child: const Icon(
+                          Icons.add_rounded,
+                          color: Color(0xFF8E2DE2),
+                          size: 22,
+                        ),
                       ),
                     ),
-                    onSubmitted: (_) => _sendMessage(),
                   ),
-                ),
-                const SizedBox(width: 8),
-                IconButton.filled(
-                  icon: const Icon(Icons.send),
-                  onPressed: _sendMessage,
-                ),
-              ],
+                  const SizedBox(width: 8),
+
+                  // Pill Text Box
+                  Expanded(
+                    child: Container(
+                      decoration: BoxDecoration(
+                        color: Theme.of(context)
+                            .colorScheme
+                            .surfaceContainerHighest
+                            .withValues(alpha: 0.4),
+                        borderRadius: BorderRadius.circular(24),
+                        border: Border.all(
+                          color: Colors.white.withValues(alpha: 0.1),
+                          width: 1,
+                        ),
+                      ),
+                      child: TextField(
+                        controller: _messageController,
+                        style: const TextStyle(fontSize: 15),
+                        maxLines: 4,
+                        minLines: 1,
+                        onChanged: (val) {
+                          ref
+                              .read(presenceControllerProvider)
+                              .onTextChanged(widget.chatId, val);
+                        },
+                        decoration: const InputDecoration(
+                          hintText: 'Type a message...',
+                          hintStyle: TextStyle(color: Colors.grey, fontSize: 14),
+                          isDense: true,
+                          filled: false,
+                          fillColor: Colors.transparent,
+                          border: InputBorder.none,
+                          enabledBorder: InputBorder.none,
+                          focusedBorder: InputBorder.none,
+                          contentPadding: EdgeInsets.symmetric(
+                            horizontal: 16,
+                            vertical: 10,
+                          ),
+                        ),
+                        onSubmitted: (_) => _sendMessage(),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+
+                  // Send Button
+                  Material(
+                    color: Colors.transparent,
+                    child: InkWell(
+                      borderRadius: BorderRadius.circular(24),
+                      onTap: () => _sendMessage(),
+                      child: Container(
+                        padding: const EdgeInsets.all(11),
+                        decoration: BoxDecoration(
+                          gradient: const LinearGradient(
+                            colors: [Color(0xFF8E2DE2), Color(0xFF4A00E0)],
+                            begin: Alignment.topLeft,
+                            end: Alignment.bottomRight,
+                          ),
+                          shape: BoxShape.circle,
+                          boxShadow: [
+                            BoxShadow(
+                              color: const Color(0xFF8E2DE2).withValues(alpha: 0.4),
+                              blurRadius: 8,
+                              offset: const Offset(0, 2),
+                            ),
+                          ],
+                        ),
+                        child: const Icon(
+                          Icons.send_rounded,
+                          color: Colors.white,
+                          size: 18,
+                        ),
+                      ),
+                    ),
+                  ),
+                ],
+              ),
             ),
           ),
         ],
@@ -347,6 +746,8 @@ class _ChatDetailViewState extends ConsumerState<ChatDetailView> {
   Widget _buildMessageBubble({
     required Key key,
     required String rawText,
+    required String? imageUrl,
+    required String mediaType,
     required bool isEncrypted,
     required bool isMe,
     required String status,
@@ -356,6 +757,8 @@ class _ChatDetailViewState extends ConsumerState<ChatDetailView> {
       return _MessageBubble(
         key: key,
         text: rawText,
+        imageUrl: imageUrl,
+        mediaType: mediaType,
         isMe: isMe,
         status: status,
         rejectionReason: rejectionReason,
@@ -367,6 +770,8 @@ class _ChatDetailViewState extends ConsumerState<ChatDetailView> {
       return _MessageBubble(
         key: key,
         text: '🔒 Unable to decrypt',
+        imageUrl: imageUrl,
+        mediaType: mediaType,
         isMe: isMe,
         status: status,
         rejectionReason: rejectionReason,
@@ -384,6 +789,8 @@ class _ChatDetailViewState extends ConsumerState<ChatDetailView> {
             : (snapshot.hasError ? '🔒 Unable to decrypt' : '🔒 Decrypting…');
         return _MessageBubble(
           text: displayText,
+          imageUrl: imageUrl,
+          mediaType: mediaType,
           isMe: isMe,
           status: status,
           rejectionReason: rejectionReason,
@@ -393,8 +800,42 @@ class _ChatDetailViewState extends ConsumerState<ChatDetailView> {
   }
 }
 
+class _AttachmentTile extends StatelessWidget {
+  final IconData icon;
+  final Color color;
+  final String label;
+  final VoidCallback onTap;
+
+  const _AttachmentTile({
+    required this.icon,
+    required this.color,
+    required this.label,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return GestureDetector(
+      onTap: onTap,
+      child: Column(
+        children: [
+          CircleAvatar(
+            radius: 26,
+            backgroundColor: color.withValues(alpha: 0.15),
+            child: Icon(icon, color: color, size: 26),
+          ),
+          const SizedBox(height: 6),
+          Text(label, style: const TextStyle(fontSize: 12)),
+        ],
+      ),
+    );
+  }
+}
+
 class _MessageBubble extends StatelessWidget {
   final String text;
+  final String? imageUrl;
+  final String mediaType;
   final bool isMe;
   final String status;
   final String? rejectionReason;
@@ -402,10 +843,16 @@ class _MessageBubble extends StatelessWidget {
   const _MessageBubble({
     super.key,
     required this.text,
+    this.imageUrl,
+    this.mediaType = 'text',
     required this.isMe,
     required this.status,
     this.rejectionReason,
   });
+
+  bool _isLink(String val) {
+    return val.startsWith('http://') || val.startsWith('https://');
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -419,10 +866,14 @@ class _MessageBubble extends StatelessWidget {
     } else if (isPending) {
       bubbleColor = scheme.surfaceContainerHighest;
     } else if (isMe) {
-      bubbleColor = scheme.primaryContainer;
+      bubbleColor = const Color(0xFF8E2DE2);
     } else {
       bubbleColor = scheme.surfaceContainerHighest;
     }
+
+    final textColor = isMe ? Colors.white : scheme.onSurface;
+
+    final isMeNormal = isMe && !isRejected && !isPending;
 
     return Align(
       alignment: isMe ? Alignment.centerRight : Alignment.centerLeft,
@@ -430,19 +881,82 @@ class _MessageBubble extends StatelessWidget {
         margin: const EdgeInsets.symmetric(vertical: 4),
         padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
         constraints: BoxConstraints(
-          maxWidth: MediaQuery.of(context).size.width * 0.75,
+          maxWidth: MediaQuery.of(context).size.width * 0.78,
         ),
         decoration: BoxDecoration(
-          color: bubbleColor,
-          borderRadius: BorderRadius.circular(16).copyWith(
-            bottomRight: isMe ? Radius.zero : const Radius.circular(16),
-            bottomLeft: !isMe ? Radius.zero : const Radius.circular(16),
+          gradient: isMeNormal
+              ? const LinearGradient(
+                  colors: [Color(0xFF8E2DE2), Color(0xFF4A00E0)],
+                  begin: Alignment.topLeft,
+                  end: Alignment.bottomRight,
+                )
+              : null,
+          color: isMeNormal ? null : bubbleColor,
+          boxShadow: [
+            BoxShadow(
+              color: Colors.black.withValues(alpha: 0.15),
+              blurRadius: 6,
+              offset: const Offset(0, 2),
+            ),
+          ],
+          borderRadius: BorderRadius.circular(20).copyWith(
+            bottomRight: isMe ? const Radius.circular(4) : const Radius.circular(20),
+            bottomLeft: !isMe ? const Radius.circular(4) : const Radius.circular(20),
           ),
         ),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text(text),
+            // Media Image Display
+            if (imageUrl != null && imageUrl!.isNotEmpty) ...[
+              ClipRRect(
+                borderRadius: BorderRadius.circular(14),
+                child: FirebaseCachedNetworkImage(
+                  imageUrl: imageUrl!,
+                  fit: BoxFit.cover,
+                ),
+              ),
+              const SizedBox(height: 6),
+            ],
+
+            // Text / Link Preview Display
+            if (text.isNotEmpty)
+              _isLink(text)
+                  ? GestureDetector(
+                      onTap: () {
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          SnackBar(content: Text('Opening link: $text')),
+                        );
+                      },
+                      child: Container(
+                        padding: const EdgeInsets.all(8),
+                        decoration: BoxDecoration(
+                          color: Colors.black.withValues(alpha: 0.15),
+                          borderRadius: BorderRadius.circular(10),
+                        ),
+                        child: Row(
+                          children: [
+                            const Icon(Icons.link, size: 18, color: Colors.blueAccent),
+                            const SizedBox(width: 6),
+                            Expanded(
+                              child: Text(
+                                text,
+                                style: const TextStyle(
+                                  color: Colors.lightBlueAccent,
+                                  decoration: TextDecoration.underline,
+                                ),
+                                overflow: TextOverflow.ellipsis,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    )
+                  : Text(
+                      text,
+                      style: TextStyle(color: textColor, fontSize: 14),
+                    ),
+
             if (isPending)
               Padding(
                 padding: const EdgeInsets.only(top: 4),
@@ -452,12 +966,15 @@ class _MessageBubble extends StatelessWidget {
                     Icon(
                       Icons.pending_actions,
                       size: 12,
-                      color: scheme.outline,
+                      color: isMe ? Colors.white70 : scheme.outline,
                     ),
                     const SizedBox(width: 4),
                     Text(
                       'Under review',
-                      style: TextStyle(fontSize: 10, color: scheme.outline),
+                      style: TextStyle(
+                        fontSize: 10,
+                        color: isMe ? Colors.white70 : scheme.outline,
+                      ),
                     ),
                   ],
                 ),

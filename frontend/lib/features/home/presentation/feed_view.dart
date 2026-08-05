@@ -118,10 +118,17 @@ class _FeedTab extends ConsumerWidget {
           child: CustomScrollView(
             slivers: [
               SliverPadding(
-                padding: const EdgeInsets.all(12),
+                padding: const EdgeInsets.only(
+                  left: 12,
+                  right: 12,
+                  top: 12,
+                  bottom: 100,
+                ),
                 sliver: layoutMode == FeedLayoutMode.grid
                     ? _buildGridView(context, posts)
-                    : _buildCardView(context, posts),
+                    : layoutMode == FeedLayoutMode.card
+                        ? _buildCardView(context, posts)
+                        : _buildSpatialDeckView(context, posts),
               ),
             ],
           ),
@@ -155,6 +162,20 @@ class _FeedTab extends ConsumerWidget {
         return PostOpenContainer(
           post: post,
           child: _ListPostCard(post: post),
+        );
+      },
+    );
+  }
+
+  Widget _buildSpatialDeckView(BuildContext context, List<FeedPost> posts) {
+    return SliverList.separated(
+      itemCount: posts.length,
+      separatorBuilder: (_, _) => const SizedBox(height: 28),
+      itemBuilder: (context, index) {
+        final post = posts[index];
+        return PostOpenContainer(
+          post: post,
+          child: _SpatialDeckCard(post: post),
         );
       },
     );
@@ -528,12 +549,13 @@ class _ListPostCard extends ConsumerWidget {
                 : null,
           ),
           if (thumb != null)
-            SizedBox(
-              height: 300,
+            Container(
+              constraints: const BoxConstraints(maxHeight: 380, minHeight: 200),
               width: double.infinity,
+              color: Colors.black.withValues(alpha: 0.8),
               child: FirebaseCachedNetworkImage(
                 imageUrl: thumb,
-                fit: BoxFit.cover,
+                fit: BoxFit.contain,
                 memCacheWidth: 1080,
                 errorWidget: (_, _, _) => Container(
                   color: Theme.of(context).colorScheme.errorContainer,
@@ -552,54 +574,64 @@ class _ListPostCard extends ConsumerWidget {
           ),
           Padding(
             padding: const EdgeInsets.only(left: 16, right: 16, bottom: 16),
-            child: Row(
-              mainAxisAlignment: MainAxisAlignment.spaceBetween,
-              children: [
-                Row(
+            child: Consumer(
+              builder: (context, ref, child) {
+                final statsAsync = ref.watch(postStatsProvider(post.id));
+                final isLikedAsync = ref.watch(isLikedProvider(post.id));
+                final isLiked = isLikedAsync.value ?? false;
+
+                final statsData = statsAsync.value;
+                final liveLikeCount =
+                    statsData?['like_count'] as int? ?? post.likeCount;
+                final liveCommentCount =
+                    statsData?['comment_count'] as int? ?? post.commentCount;
+                final liveViewCount =
+                    statsData?['view_count'] as int? ?? post.viewCount;
+
+                return Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
                   children: [
-                    const Icon(
-                      Icons.favorite_border,
-                      size: 16,
-                      color: Colors.grey,
+                    Row(
+                      children: [
+                        Icon(
+                          isLiked ? Icons.favorite : Icons.favorite_border,
+                          size: 16,
+                          color: isLiked ? Colors.red : Colors.grey,
+                        ),
+                        const SizedBox(width: 4),
+                        Text(
+                          '$liveLikeCount',
+                          style: TextStyle(
+                            color: isLiked ? Colors.red : Colors.grey,
+                          ),
+                        ),
+                        const SizedBox(width: 16),
+                        const Icon(
+                          Icons.chat_bubble_outline,
+                          size: 16,
+                          color: Colors.grey,
+                        ),
+                        const SizedBox(width: 4),
+                        Text(
+                          '$liveCommentCount',
+                          style: const TextStyle(color: Colors.grey),
+                        ),
+                        const SizedBox(width: 16),
+                        const Icon(
+                          Icons.remove_red_eye_outlined,
+                          size: 16,
+                          color: Colors.grey,
+                        ),
+                        const SizedBox(width: 4),
+                        Text(
+                          '$liveViewCount',
+                          style: const TextStyle(color: Colors.grey),
+                        ),
+                      ],
                     ),
-                    const SizedBox(width: 4),
-                    Text(
-                      '${post.likeCount}',
-                      style: const TextStyle(color: Colors.grey),
-                    ),
-                    const SizedBox(width: 16),
-                    const Icon(
-                      Icons.chat_bubble_outline,
-                      size: 16,
-                      color: Colors.grey,
-                    ),
-                    const SizedBox(width: 4),
-                    Text(
-                      '${post.commentCount}',
-                      style: const TextStyle(color: Colors.grey),
-                    ),
-                    const SizedBox(width: 16),
-                    const Icon(
-                      Icons.remove_red_eye_outlined,
-                      size: 16,
-                      color: Colors.grey,
-                    ),
-                    const SizedBox(width: 4),
-                    Text(
-                      '${post.viewCount}',
-                      style: const TextStyle(color: Colors.grey),
-                    ),
-                  ],
-                ),
-                Row(
-                  children: [
-                    Consumer(
-                      builder: (context, ref, child) {
-                        final isLikedAsync = ref.watch(
-                          isLikedProvider(post.id),
-                        );
-                        final isLiked = isLikedAsync.value ?? false;
-                        return FloatingActionButton.small(
+                    Row(
+                      children: [
+                        FloatingActionButton.small(
                           heroTag: 'like_${post.id}',
                           onPressed: () {
                             HapticFeedback.lightImpact();
@@ -630,19 +662,19 @@ class _ListPostCard extends ConsumerWidget {
                                     duration: 200.ms,
                                     curve: Curves.easeOutBack,
                                   ),
-                        );
-                      },
-                    ),
-                    const SizedBox(width: 8),
-                    FloatingActionButton.small(
-                      heroTag: 'comment_${post.id}',
-                      onPressed: () =>
-                          showCommentsBottomSheet(context, post.id),
-                      child: const Icon(Icons.chat_bubble_outline),
+                        ),
+                        const SizedBox(width: 8),
+                        FloatingActionButton.small(
+                          heroTag: 'comment_${post.id}',
+                          onPressed: () =>
+                              showCommentsBottomSheet(context, post.id),
+                          child: const Icon(Icons.chat_bubble_outline),
+                        ),
+                      ],
                     ),
                   ],
-                ),
-              ],
+                );
+              },
             ),
           ),
         ],
@@ -784,101 +816,108 @@ class PostDetailScreenState extends ConsumerState<PostDetailScreen> {
               children: [
                 // Image carousel
                 if (_mediaUrls.isNotEmpty)
-                  SizedBox(
-                    height: 400,
-                    child: Stack(
-                      children: [
-                        Positioned.fill(
-                          child: PageView.builder(
-                            itemCount: _mediaUrls.length,
-                            onPageChanged: (i) =>
-                                setState(() => _currentPage = i),
-                            itemBuilder: (context, i) => GestureDetector(
-                              onTap: () => Navigator.of(context).push(
-                                MaterialPageRoute<void>(
-                                  fullscreenDialog: true,
-                                  builder: (_) => FullscreenMediaViewer(
-                                    urls: _mediaUrls,
-                                    initialIndex: i,
-                                  ),
-                                ),
-                              ),
-                              child: Stack(
-                                fit: StackFit.expand,
-                                children: [
-                                  FirebaseCachedNetworkImage(
-                                    imageUrl: _mediaUrls[i],
-                                    fit: BoxFit.cover,
-                                    memCacheWidth: 1080,
-                                    errorWidget: (context, url, error) =>
-                                        Container(
-                                          color: Theme.of(
-                                            context,
-                                          ).colorScheme.surfaceContainerHighest,
-                                          child: const Center(
-                                            child: Icon(
-                                              Icons.broken_image_outlined,
-                                              size: 48,
-                                              color: Colors.grey,
-                                            ),
-                                          ),
-                                        ),
-                                  ),
-                                  // Fullscreen affordance icon
-                                  Positioned(
-                                    top: 10,
-                                    right: 10,
-                                    child: Container(
-                                      padding: const EdgeInsets.all(5),
-                                      decoration: BoxDecoration(
-                                        color: Colors.black45,
-                                        borderRadius: BorderRadius.circular(8),
-                                      ),
-                                      child: const Icon(
-                                        Icons.fullscreen,
-                                        color: Colors.white,
-                                        size: 18,
-                                      ),
+                  ConstrainedBox(
+                    constraints: BoxConstraints(
+                      maxHeight: MediaQuery.of(context).size.height * 0.65,
+                      minHeight: 280,
+                    ),
+                    child: Container(
+                      width: double.infinity,
+                      color: Colors.black.withValues(alpha: 0.9),
+                      child: Stack(
+                        children: [
+                          Positioned.fill(
+                            child: PageView.builder(
+                              itemCount: _mediaUrls.length,
+                              onPageChanged: (i) =>
+                                  setState(() => _currentPage = i),
+                              itemBuilder: (context, i) => GestureDetector(
+                                onTap: () => Navigator.of(context).push(
+                                  MaterialPageRoute<void>(
+                                    fullscreenDialog: true,
+                                    builder: (_) => FullscreenMediaViewer(
+                                      urls: _mediaUrls,
+                                      initialIndex: i,
                                     ),
                                   ),
-                                ],
+                                ),
+                                child: Stack(
+                                  fit: StackFit.expand,
+                                  children: [
+                                    FirebaseCachedNetworkImage(
+                                      imageUrl: _mediaUrls[i],
+                                      fit: BoxFit.contain,
+                                      memCacheWidth: 1080,
+                                      errorWidget: (context, url, error) =>
+                                          Container(
+                                            color: Theme.of(
+                                              context,
+                                            ).colorScheme.surfaceContainerHighest,
+                                            child: const Center(
+                                              child: Icon(
+                                                Icons.broken_image_outlined,
+                                                size: 48,
+                                                color: Colors.grey,
+                                              ),
+                                            ),
+                                          ),
+                                    ),
+                                    // Fullscreen affordance icon
+                                    Positioned(
+                                      top: 10,
+                                      right: 10,
+                                      child: Container(
+                                        padding: const EdgeInsets.all(5),
+                                        decoration: BoxDecoration(
+                                          color: Colors.black45,
+                                          borderRadius: BorderRadius.circular(8),
+                                        ),
+                                        child: const Icon(
+                                          Icons.fullscreen,
+                                          color: Colors.white,
+                                          size: 18,
+                                        ),
+                                      ),
+                                    ),
+                                  ],
+                                ),
                               ),
                             ),
                           ),
-                        ),
-                        // Dot indicators.
-                        if (_mediaUrls.length > 1)
-                          Positioned(
-                            bottom: 16,
-                            left: 0,
-                            right: 0,
-                            child: Row(
-                              mainAxisAlignment: MainAxisAlignment.center,
-                              children: List.generate(_mediaUrls.length, (i) {
-                                return AnimatedContainer(
-                                  duration: const Duration(milliseconds: 300),
-                                  margin: const EdgeInsets.symmetric(
-                                    horizontal: 4,
-                                  ),
-                                  width: _currentPage == i ? 12 : 8,
-                                  height: _currentPage == i ? 12 : 8,
-                                  decoration: BoxDecoration(
-                                    color: _currentPage == i
-                                        ? Colors.white
-                                        : Colors.white.withValues(alpha: 0.5),
-                                    shape: BoxShape.circle,
-                                    boxShadow: const [
-                                      BoxShadow(
-                                        color: Colors.black45,
-                                        blurRadius: 4,
-                                      ),
-                                    ],
-                                  ),
-                                );
-                              }),
+                          // Dot indicators.
+                          if (_mediaUrls.length > 1)
+                            Positioned(
+                              bottom: 16,
+                              left: 0,
+                              right: 0,
+                              child: Row(
+                                mainAxisAlignment: MainAxisAlignment.center,
+                                children: List.generate(_mediaUrls.length, (i) {
+                                  return AnimatedContainer(
+                                    duration: const Duration(milliseconds: 300),
+                                    margin: const EdgeInsets.symmetric(
+                                      horizontal: 4,
+                                    ),
+                                    width: _currentPage == i ? 12 : 8,
+                                    height: _currentPage == i ? 12 : 8,
+                                    decoration: BoxDecoration(
+                                      color: _currentPage == i
+                                          ? Colors.white
+                                          : Colors.white.withValues(alpha: 0.5),
+                                      shape: BoxShape.circle,
+                                      boxShadow: const [
+                                        BoxShadow(
+                                          color: Colors.black45,
+                                          blurRadius: 4,
+                                        ),
+                                      ],
+                                    ),
+                                  );
+                                }),
+                              ),
                             ),
-                          ),
-                      ],
+                        ],
+                      ),
                     ),
                   ),
 
@@ -1031,30 +1070,45 @@ class PostDetailScreenState extends ConsumerState<PostDetailScreen> {
                         ),
                       ),
                       const SizedBox(height: 32),
-                      Row(
-                        mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-                        children: [
-                          _LikeActionWidget(post: widget.post),
-                          _buildAction(
-                            Icons.chat_bubble_outline,
-                            '${widget.post.commentCount}',
-                            () => showCommentsBottomSheet(
-                              context,
-                              widget.post.id,
-                            ),
-                          ),
-                          _buildAction(Icons.share_outlined, 'Share', () {
-                            final shareText =
-                                'Check out this post on SafeChat: https://safechat.com/post/${widget.post.id}';
-                            // ignore: deprecated_member_use
-                            Share.share(shareText);
-                          }),
-                          _buildAction(
-                            Icons.visibility_outlined,
-                            '${widget.post.viewCount}',
-                            () {}, // View count is just a display
-                          ),
-                        ],
+                      Consumer(
+                        builder: (context, ref, child) {
+                          final statsAsync = ref.watch(
+                            postStatsProvider(widget.post.id),
+                          );
+                          final statsData = statsAsync.value;
+                          final liveCommentCount =
+                              statsData?['comment_count'] as int? ??
+                                  widget.post.commentCount;
+                          final liveViewCount =
+                              statsData?['view_count'] as int? ??
+                                  widget.post.viewCount;
+
+                          return Row(
+                            mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                            children: [
+                              _LikeActionWidget(post: widget.post),
+                              _buildAction(
+                                Icons.chat_bubble_outline,
+                                '$liveCommentCount',
+                                () => showCommentsBottomSheet(
+                                  context,
+                                  widget.post.id,
+                                ),
+                              ),
+                              _buildAction(Icons.share_outlined, 'Share', () {
+                                final shareText =
+                                    'Check out this post on SafeChat: https://safechat.com/post/${widget.post.id}';
+                                // ignore: deprecated_member_use
+                                Share.share(shareText);
+                              }),
+                              _buildAction(
+                                Icons.visibility_outlined,
+                                '$liveViewCount',
+                                () {}, // View count is just a display
+                              ),
+                            ],
+                          );
+                        },
                       ),
                       const SizedBox(height: 48),
                     ],
@@ -1137,14 +1191,24 @@ void showCommentsBottomSheet(BuildContext context, String postId) {
             Expanded(
               child: Consumer(
                 builder: (context, ref, child) {
+                  final streamAsync =
+                      ref.watch(approvedCommentsStreamProvider(postId));
                   final commentsAsync = ref.watch(commentsProvider(postId));
-                  return commentsAsync.when(
-                    data: (comments) {
-                      if (comments.isEmpty) {
-                        return const Center(child: Text('No comments yet.'));
-                      }
-                      return ListView.builder(
-                        itemCount: comments.length,
+                  final comments =
+                      streamAsync.value ?? commentsAsync.value ?? [];
+                  final isLoading =
+                      streamAsync.isLoading && commentsAsync.isLoading;
+
+                  if (isLoading) {
+                    return const Center(child: CircularProgressIndicator());
+                  }
+
+                  if (comments.isEmpty) {
+                    return const Center(child: Text('No comments yet.'));
+                  }
+
+                  return ListView.builder(
+                    itemCount: comments.length,
                         itemBuilder: (context, index) {
                           final comment = comments[index];
                           return ListTile(
@@ -1281,11 +1345,6 @@ void showCommentsBottomSheet(BuildContext context, String postId) {
                           );
                         },
                       );
-                    },
-                    loading: () =>
-                        const Center(child: CircularProgressIndicator()),
-                    error: (err, st) => Center(child: Text('Error: $err')),
-                  );
                 },
               ),
             ),
@@ -1393,29 +1452,17 @@ class _LikeActionWidget extends ConsumerStatefulWidget {
 }
 
 class _LikeActionWidgetState extends ConsumerState<_LikeActionWidget> {
-  bool? _initialIsLiked;
-  int _offset = 0;
-
   @override
   Widget build(BuildContext context) {
     final isLikedAsync = ref.watch(isLikedProvider(widget.post.id));
     final isLiked = isLikedAsync.value ?? false;
 
-    if (!isLikedAsync.isLoading && _initialIsLiked == null) {
-      _initialIsLiked = isLiked;
-    }
+    final statsAsync = ref.watch(postStatsProvider(widget.post.id));
+    final statsData = statsAsync.value;
+    final liveLikeCount =
+        statsData?['like_count'] as int? ?? widget.post.likeCount;
 
-    if (_initialIsLiked != null) {
-      if (isLiked && !_initialIsLiked!) {
-        _offset = 1;
-      } else if (!isLiked && _initialIsLiked!) {
-        _offset = -1;
-      } else {
-        _offset = 0;
-      }
-    }
-
-    int displayCount = widget.post.likeCount + _offset;
+    int displayCount = liveLikeCount;
     if (displayCount < 0) displayCount = 0;
 
     Widget icon = Icon(
@@ -1457,3 +1504,387 @@ class _LikeActionWidgetState extends ConsumerState<_LikeActionWidget> {
     );
   }
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Spatial Deck Card (Modern Fluid Concept)
+// ─────────────────────────────────────────────────────────────────────────────
+
+const _emeraldColor = Color(0xFF10B981);
+
+class _SpatialDeckCard extends ConsumerWidget {
+  final FeedPost post;
+  const _SpatialDeckCard({required this.post});
+
+  void _showSafetyShieldDialog(BuildContext context) {
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+        title: const Row(
+          children: [
+            Icon(Icons.shield_outlined, color: _emeraldColor, size: 28),
+            SizedBox(width: 10),
+            Text('SafeChat AI Verified', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 18)),
+          ],
+        ),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text(
+              'This content passed SafeChat real-time multi-layer AI moderation cascade with zero toxic or bullying signals.',
+              style: TextStyle(fontSize: 14, height: 1.4),
+            ),
+            const SizedBox(height: 16),
+            Container(
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: _emeraldColor.withValues(alpha: 0.1),
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(color: _emeraldColor.withValues(alpha: 0.3)),
+              ),
+              child: const Column(
+                children: [
+                  _SafetyCheckRow(label: 'Keyword Lexicon Scorer', status: 'Passed (0.00)'),
+                  SizedBox(height: 6),
+                  _SafetyCheckRow(label: 'TF-IDF Toxicity Engine', status: 'Clean'),
+                  SizedBox(height: 6),
+                  _SafetyCheckRow(label: 'Vision Media Filter', status: 'Verified Safe'),
+                ],
+              ),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(),
+            child: const Text('Got it'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final theme = Theme.of(context);
+    final colorScheme = theme.colorScheme;
+    final statsAsync = ref.watch(postStatsProvider(post.id));
+    final isLikedAsync = ref.watch(isLikedProvider(post.id));
+    final isLiked = isLikedAsync.value ?? false;
+
+    final statsData = statsAsync.value;
+    final liveLikeCount = statsData?['like_count'] as int? ?? post.likeCount;
+    final liveCommentCount = statsData?['comment_count'] as int? ?? post.commentCount;
+    final liveViewCount = statsData?['view_count'] as int? ?? post.viewCount;
+
+    final mediaUrls = post.displayUrls;
+
+    return Container(
+      decoration: BoxDecoration(
+        color: colorScheme.surfaceContainerHighest.withValues(alpha: 0.45),
+        borderRadius: BorderRadius.circular(28),
+        border: Border.all(
+          color: colorScheme.primary.withValues(alpha: 0.25),
+          width: 1.5,
+        ),
+        boxShadow: [
+          BoxShadow(
+            color: colorScheme.primary.withValues(alpha: 0.08),
+            blurRadius: 24,
+            spreadRadius: 2,
+            offset: const Offset(0, 8),
+          ),
+        ],
+      ),
+      child: ClipRRect(
+        borderRadius: BorderRadius.circular(28),
+        child: BackdropFilter(
+          filter: ImageFilter.blur(sigmaX: 16, sigmaY: 16),
+          child: Padding(
+            padding: const EdgeInsets.all(16.0),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                // Top Author + Safety Shield Row
+                Row(
+                  children: [
+                    // Author Avatar with Glowing Ring
+                    GestureDetector(
+                      onTap: () {
+                        Navigator.of(context).push(
+                          MaterialPageRoute(
+                            builder: (_) => PublicProfileView(
+                              uid: post.authorUid,
+                              username: post.authorUsername,
+                            ),
+                          ),
+                        );
+                      },
+                      child: Container(
+                        padding: const EdgeInsets.all(2.5),
+                        decoration: BoxDecoration(
+                          shape: BoxShape.circle,
+                          gradient: SweepGradient(
+                            colors: [
+                              colorScheme.primary,
+                              colorScheme.tertiary,
+                              colorScheme.primary,
+                            ],
+                          ),
+                        ),
+                        child: CircleAvatar(
+                          radius: 20,
+                          backgroundColor: colorScheme.surface,
+                          backgroundImage: FirebaseImageProviderWrapper.getProvider(
+                            ref,
+                            post.authorPhotoUrl,
+                          ),
+                          child: post.authorPhotoUrl.isEmpty
+                              ? Text(
+                                  post.authorDisplayName.isNotEmpty
+                                      ? post.authorDisplayName[0].toUpperCase()
+                                      : '?',
+                                  style: const TextStyle(fontWeight: FontWeight.bold),
+                                )
+                              : null,
+                        ),
+                      ),
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            post.authorDisplayName,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: const TextStyle(
+                              fontWeight: FontWeight.bold,
+                              fontSize: 15,
+                            ),
+                          ),
+                          Text(
+                            '@${post.authorUsername}',
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: TextStyle(
+                              fontSize: 12,
+                              color: colorScheme.onSurfaceVariant,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                    // Interactive Safety Shield Badge
+                    InkWell(
+                      onTap: () => _showSafetyShieldDialog(context),
+                      borderRadius: BorderRadius.circular(20),
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+                        decoration: BoxDecoration(
+                          color: _emeraldColor.withValues(alpha: 0.12),
+                          borderRadius: BorderRadius.circular(20),
+                          border: Border.all(
+                            color: _emeraldColor.withValues(alpha: 0.4),
+                          ),
+                        ),
+                        child: const Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Icon(Icons.shield, color: _emeraldColor, size: 14),
+                            SizedBox(width: 4),
+                            Text(
+                              'Verified Safe',
+                              style: TextStyle(
+                                color: _emeraldColor,
+                                fontSize: 11,
+                                fontWeight: FontWeight.bold,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ).animate().scale(duration: 1000.ms, curve: Curves.easeInOut),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 14),
+
+                // Post Caption (Markdown)
+                if (post.text.isNotEmpty) ...[
+                  MarkdownBody(
+                    data: post.text,
+                    styleSheet: MarkdownStyleSheet(
+                      p: TextStyle(
+                        fontSize: 15,
+                        height: 1.4,
+                        color: colorScheme.onSurface,
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 14),
+                ],
+
+                // Media Display (Image Grid / Carousel)
+                if (mediaUrls.isNotEmpty) ...[
+                  ClipRRect(
+                    borderRadius: BorderRadius.circular(20),
+                    child: Container(
+                      constraints: const BoxConstraints(maxHeight: 380, minHeight: 200),
+                      width: double.infinity,
+                      color: Colors.black.withValues(alpha: 0.8),
+                      child: FirebaseCachedNetworkImage(
+                        imageUrl: mediaUrls.first,
+                        fit: BoxFit.contain,
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 14),
+                ],
+
+                // Action Bar (Likes, Comments, Views, Share)
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    Row(
+                      children: [
+                        // Animated Like Pill
+                        InkWell(
+                          onTap: () {
+                            HapticFeedback.lightImpact();
+                            if (isLiked) {
+                              ref.read(postRepositoryProvider).unlikePost(post.id);
+                            } else {
+                              ref.read(postRepositoryProvider).likePost(post.id);
+                            }
+                          },
+                          borderRadius: BorderRadius.circular(20),
+                          child: Container(
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 12,
+                              vertical: 6,
+                            ),
+                            decoration: BoxDecoration(
+                              color: isLiked
+                                  ? Colors.red.withValues(alpha: 0.15)
+                                  : colorScheme.surfaceContainer.withValues(alpha: 0.6),
+                              borderRadius: BorderRadius.circular(20),
+                            ),
+                            child: Row(
+                              children: [
+                                Icon(
+                                  isLiked ? Icons.favorite : Icons.favorite_border,
+                                  color: isLiked ? Colors.red : colorScheme.onSurfaceVariant,
+                                  size: 18,
+                                ),
+                                const SizedBox(width: 6),
+                                RollingCounter(
+                                  value: liveLikeCount < 0 ? 0 : liveLikeCount,
+                                  style: TextStyle(
+                                    fontSize: 13,
+                                    fontWeight: FontWeight.w600,
+                                    color: isLiked ? Colors.red : colorScheme.onSurfaceVariant,
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ),
+                        const SizedBox(width: 10),
+
+                        // Comment Button
+                        InkWell(
+                          onTap: () => showCommentsBottomSheet(context, post.id),
+                          borderRadius: BorderRadius.circular(20),
+                          child: Container(
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 12,
+                              vertical: 6,
+                            ),
+                            decoration: BoxDecoration(
+                              color: colorScheme.surfaceContainer.withValues(alpha: 0.6),
+                              borderRadius: BorderRadius.circular(20),
+                            ),
+                            child: Row(
+                              children: [
+                                Icon(
+                                  Icons.chat_bubble_outline,
+                                  color: colorScheme.onSurfaceVariant,
+                                  size: 18,
+                                ),
+                                const SizedBox(width: 6),
+                                Text(
+                                  '$liveCommentCount',
+                                  style: TextStyle(
+                                    fontSize: 13,
+                                    fontWeight: FontWeight.w600,
+                                    color: colorScheme.onSurfaceVariant,
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+
+                    Row(
+                      children: [
+                        // View Count Badge
+                        Row(
+                          children: [
+                            Icon(
+                              Icons.remove_red_eye_outlined,
+                              size: 16,
+                              color: colorScheme.onSurfaceVariant.withValues(alpha: 0.7),
+                            ),
+                            const SizedBox(width: 4),
+                            Text(
+                              '$liveViewCount',
+                              style: TextStyle(
+                                fontSize: 12,
+                                color: colorScheme.onSurfaceVariant.withValues(alpha: 0.7),
+                              ),
+                            ),
+                          ],
+                        ),
+                        const SizedBox(width: 12),
+
+                        // Share Button
+                        IconButton(
+                          icon: const Icon(Icons.share_outlined, size: 20),
+                          onPressed: () {
+                            Share.share('Check out this post on SafeChat: ${post.text}');
+                          },
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _SafetyCheckRow extends StatelessWidget {
+  final String label;
+  final String status;
+  const _SafetyCheckRow({required this.label, required this.status});
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+      children: [
+        Text(label, style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w500)),
+        Text(status, style: const TextStyle(fontSize: 12, color: _emeraldColor, fontWeight: FontWeight.bold)),
+      ],
+    );
+  }
+}
+

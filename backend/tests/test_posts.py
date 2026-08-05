@@ -143,7 +143,7 @@ async def test_create_post_returns_post(fake_db: _FakeDB, monkeypatch: pytest.Mo
 
     monkeypatch.setattr(posts_service, "moderate_text", fake_moderate)
 
-    post = await posts_service.create_post("uid-1", "Hello world")
+    post = await posts_service.create_post("uid-1", "Hello world", media_urls=["https://storage.googleapis.com/bucket/img.jpg"], media_type="image")
 
     assert isinstance(post, Post)
     assert post.author_uid == "uid-1"
@@ -169,7 +169,7 @@ async def test_create_post_blocked_raises(monkeypatch: pytest.MonkeyPatch) -> No
     monkeypatch.setattr(posts_service, "moderate_text", fake_moderate)
 
     with pytest.raises(posts_service.PostBlocked) as exc_info:
-        await posts_service.create_post("uid-1", "toxic text")
+        await posts_service.create_post("uid-1", "toxic text", media_urls=["https://storage.googleapis.com/bucket/img.jpg"], media_type="image")
 
     assert exc_info.value.layer == "keyword"
 
@@ -195,7 +195,7 @@ async def test_create_post_submit_for_review_creates_pending_and_queue(
     monkeypatch.setattr(posts_service, "moderate_text", fake_moderate)
     monkeypatch.setattr(posts_service.users_service, "get_user_profile", fake_profile)
 
-    post = await posts_service.create_post("uid-1", "idiot", submit_for_review=True)
+    post = await posts_service.create_post("uid-1", "idiot", media_urls=["https://storage.googleapis.com/bucket/img.jpg"], media_type="image", submit_for_review=True)
 
     assert post.status == "pending_review"
     assert post.flagged_terms == ["idiot"]
@@ -294,7 +294,10 @@ def test_post_endpoint_returns_201(client: TestClient, monkeypatch: pytest.Monke
 
     monkeypatch.setattr(posts_service, "create_post", fake_create)
 
-    response = client.post("/api/v1/posts", json={"text": "Hello world"})
+    response = client.post(
+        "/api/v1/posts",
+        json={"text": "Hello world", "media_urls": ["https://storage.googleapis.com/b/img.jpg"], "media_type": "image"},
+    )
 
     assert response.status_code == 201
     data = response.json()["data"]["post"]
@@ -323,7 +326,10 @@ def test_post_endpoint_toxic_text_returns_422(
 
     monkeypatch.setattr(posts_service, "create_post", fake_create)
 
-    response = client.post("/api/v1/posts", json={"text": "toxic content"})
+    response = client.post(
+        "/api/v1/posts",
+        json={"text": "toxic content", "media_urls": ["https://storage.googleapis.com/b/img.jpg"], "media_type": "image"},
+    )
 
     assert response.status_code == 422
     body = response.json()

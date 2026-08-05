@@ -17,6 +17,8 @@ class UserProfile {
   final String? photoUrl;
   @JsonKey(name: 'background_url')
   final String? backgroundUrl;
+  @JsonKey(name: 'safechat_protection')
+  final bool? safechatProtection;
   @JsonKey(name: 'created_at')
   final String createdAt;
   @JsonKey(name: 'updated_at')
@@ -31,6 +33,7 @@ class UserProfile {
     this.bio,
     this.photoUrl,
     this.backgroundUrl,
+    this.safechatProtection,
     required this.createdAt,
     required this.updatedAt,
   });

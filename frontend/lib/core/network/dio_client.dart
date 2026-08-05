@@ -26,6 +26,7 @@ final dioProvider = Provider<Dio>((ref) {
   dio.options.baseUrl = _resolveBaseUrl();
   dio.options.connectTimeout = const Duration(seconds: 10);
   dio.options.receiveTimeout = const Duration(seconds: 10);
+  dio.options.headers['Accept-Encoding'] = 'gzip';
 
   dio.interceptors.add(
     InterceptorsWrapper(
@@ -34,7 +35,8 @@ final dioProvider = Provider<Dio>((ref) {
         final user = FirebaseAuth.instance.currentUser;
         if (user != null) {
           try {
-            final token = await user.getIdToken();
+            // getIdToken(false) uses the cached token if valid (~1 hour TTL)
+            final token = await user.getIdToken(false);
             if (token != null) {
               options.headers['Authorization'] = 'Bearer $token';
             }

@@ -29,7 +29,7 @@ final ambientModeProvider = NotifierProvider<AmbientModeNotifier, bool>(() {
   return AmbientModeNotifier();
 });
 
-enum FeedLayoutMode { grid, card }
+enum FeedLayoutMode { grid, card, spatialDeck }
 
 class FeedLayoutNotifier extends Notifier<FeedLayoutMode> {
   @override
@@ -39,16 +39,18 @@ class FeedLayoutNotifier extends Notifier<FeedLayoutMode> {
       final index =
           box.get('feed_layout', defaultValue: FeedLayoutMode.grid.index)
               as int;
-      return FeedLayoutMode.values[index];
+      if (index >= 0 && index < FeedLayoutMode.values.length) {
+        return FeedLayoutMode.values[index];
+      }
+      return FeedLayoutMode.grid;
     } catch (e) {
       return FeedLayoutMode.grid;
     }
   }
 
   void toggleLayout() {
-    setLayout(
-      state == FeedLayoutMode.grid ? FeedLayoutMode.card : FeedLayoutMode.grid,
-    );
+    final nextIndex = (state.index + 1) % FeedLayoutMode.values.length;
+    setLayout(FeedLayoutMode.values[nextIndex]);
   }
 
   void setLayout(FeedLayoutMode mode) {

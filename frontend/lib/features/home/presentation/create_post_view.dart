@@ -20,6 +20,7 @@ class _CreatePostViewState extends ConsumerState<CreatePostView> {
   final ImagePicker _picker = ImagePicker();
   final PageController _pageController = PageController();
   int _currentStep = 0;
+  String? _validationError;
 
   @override
   void initState() {
@@ -41,10 +42,21 @@ class _CreatePostViewState extends ConsumerState<CreatePostView> {
     if (images.isNotEmpty) {
       final files = images.map((x) => File(x.path)).toList();
       ref.read(createPostProvider.notifier).addMedia(files);
+      if (_validationError != null) {
+        setState(() => _validationError = null);
+      }
     }
   }
 
   Future<void> _submit() async {
+    if (ref.read(createPostProvider).selectedMedia.isEmpty) {
+      setState(() {
+        _validationError =
+            '📷 Posts cannot be text-only. Please select an image or video.';
+      });
+      return;
+    }
+    setState(() => _validationError = null);
     ref.read(createPostProvider.notifier).setCaption(_captionController.text);
     final outcome = await ref.read(createPostProvider.notifier).submitPost();
     if (!mounted) return;
@@ -113,24 +125,23 @@ class _CreatePostViewState extends ConsumerState<CreatePostView> {
   void _showError() {
     final error = ref.read(createPostProvider).submissionState.error;
     final message = error != null
-        ? 'Error: ${error.toString().split('\n').first}'
+        ? error.toString().replaceFirst('Exception: ', '').split('\n').first
         : 'Failed to create post. Please try again.';
-    showDialog(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text('Post Failed'),
-        content: Text(message),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(ctx).pop(),
-            child: const Text('OK'),
-          ),
-        ],
-      ),
-    );
+    setState(() {
+      _validationError = message;
+    });
   }
 
   void _nextStep() {
+    if (_currentStep == 0 &&
+        ref.read(createPostProvider).selectedMedia.isEmpty) {
+      setState(() {
+        _validationError =
+            '📷 Please select at least one image or video to proceed.';
+      });
+      return;
+    }
+    setState(() => _validationError = null);
     if (_currentStep < 2) {
       setState(() => _currentStep++);
       _pageController.nextPage(
@@ -199,6 +210,54 @@ class _CreatePostViewState extends ConsumerState<CreatePostView> {
                 ),
               ),
               const Divider(),
+
+              if (_validationError != null)
+                Padding(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 16.0,
+                    vertical: 4.0,
+                  ),
+                  child: Container(
+                    padding: const EdgeInsets.all(12),
+                    decoration: BoxDecoration(
+                      color: Theme.of(context).colorScheme.errorContainer,
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                    child: Row(
+                      children: [
+                        Icon(
+                          Icons.warning_amber_rounded,
+                          color: Theme.of(
+                            context,
+                          ).colorScheme.onErrorContainer,
+                        ),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          child: Text(
+                            _validationError!,
+                            style: TextStyle(
+                              color: Theme.of(
+                                context,
+                              ).colorScheme.onErrorContainer,
+                              fontWeight: FontWeight.bold,
+                              fontSize: 13,
+                            ),
+                          ),
+                        ),
+                        GestureDetector(
+                          onTap: () => setState(() => _validationError = null),
+                          child: Icon(
+                            Icons.close,
+                            size: 18,
+                            color: Theme.of(
+                              context,
+                            ).colorScheme.onErrorContainer,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
 
               if (isLoading) ...[
                 const Padding(

@@ -9,6 +9,7 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Response
 from fastapi.responses import JSONResponse
+from pydantic import BaseModel
 
 from middleware.auth import get_current_user_claims
 from models.message import EncryptionModeRequest, SendMessageRequest
@@ -166,6 +167,8 @@ async def send_message(
             sender_uid=claims["uid"],
             text=payload.text,
             image_url=payload.image_url,
+            media_type=payload.media_type,
+            metadata=payload.metadata,
             submit_for_review=payload.submit_for_review,
         )
     except messages_service.ChatNotFound as exc:
@@ -176,6 +179,16 @@ async def send_message(
         raise HTTPException(
             status_code=403,
             detail={"code": "FORBIDDEN", "message": str(exc)},
+        ) from exc
+    except messages_service.SafeChatProtectionBlocked as exc:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "code": "SAFECHAT_PROTECTION_BLOCKED",
+                "message": exc.reason,
+                "layer": exc.layer,
+                "categories": exc.categories,
+            },
         ) from exc
     except messages_service.MessageBlocked as exc:
         return _moderation_flagged_response(exc.matches, exc.reason)
@@ -271,3 +284,24 @@ async def get_or_create_chat(
         status_code=201,
         content={"data": {"chat": chat.model_dump(mode="json")}, "meta": _meta()},
     )
+
+
+class PresenceRequest(BaseModel):
+    is_typing: bool = False
+    is_viewing: bool = False
+
+
+@router.post("/{chat_id}/presence", status_code=204)
+async def update_presence(
+    chat_id: str,
+    payload: PresenceRequest,
+    claims: dict[str, Any] = Depends(get_current_user_claims),
+) -> Response:
+    """Update user presence and typing status in a chat room."""
+    await messages_service.update_presence(
+        chat_id=chat_id,
+        uid=claims["uid"],
+        is_typing=payload.is_typing,
+        is_viewing=payload.is_viewing,
+    )
+    return Response(status_code=204)

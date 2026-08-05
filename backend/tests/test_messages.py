@@ -880,6 +880,7 @@ def test_post_message_returns_201(client: TestClient, monkeypatch: pytest.Monkey
         text: str,
         image_url: str | None = None,
         submit_for_review: bool = False,
+        **kwargs: Any,
     ) -> Message:
         return _sample_message(chat_id=chat_id, sender_uid=sender_uid, text=text)
 
@@ -908,6 +909,7 @@ def test_post_message_toxic_text_returns_422(
         text: str,
         image_url: str | None = None,
         submit_for_review: bool = False,
+        **kwargs: Any,
     ) -> Message:
         raise messages_service.MessageBlocked(
             layer="keyword",

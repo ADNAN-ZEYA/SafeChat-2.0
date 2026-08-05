@@ -59,6 +59,7 @@ class UpdateProfileRequest(BaseModel):
     background_url: str | None = None
     private_account: bool | None = None
     allow_messages_from: Literal["everyone", "followers", "none"] | None = None
+    safechat_protection: bool | None = None
     public_key: str | None = None
 
 
@@ -92,6 +93,7 @@ class UserProfile(BaseModel):
 
     private_account: bool
     allow_messages_from: Literal["everyone", "followers", "none"]
+    safechat_protection: bool = True
 
     schema_version: int
 

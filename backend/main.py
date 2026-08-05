@@ -24,6 +24,7 @@ from core.logging import (
     reset_request_id,
     set_request_id,
 )
+from starlette.middleware.gzip import GZipMiddleware
 from middleware.rate_limit import install_rate_limiter
 from routes import admin as admin_routes
 from routes import auth as auth_routes
@@ -173,6 +174,7 @@ def create_app() -> FastAPI:
         allow_methods=["*"],
         allow_headers=["*"],
     )
+    app.add_middleware(GZipMiddleware, minimum_size=500)
 
     # PR-03: correlate logs with a per-request id (reused from an inbound
     # X-Request-ID when the client/proxy sets one). Registered before the

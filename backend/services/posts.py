@@ -108,6 +108,9 @@ async def create_post(
     Raises:
         PostBlocked: flagged text when the author has not opted into review.
     """
+    if not media_urls:
+        raise ValueError("Posts cannot be text-only. At least one image or video is required.")
+
     result = await moderate_text(text)
 
     if result.blocked and not submit_for_review:

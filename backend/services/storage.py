@@ -26,10 +26,16 @@ _CONTENT_TYPE_TO_EXT: dict[str, str] = {
     "image/png": "png",
     "image/webp": "webp",
     "video/mp4": "mp4",
+    "video/quicktime": "mov",
+    "application/pdf": "pdf",
+    "application/msword": "doc",
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document": "docx",
+    "text/plain": "txt",
 }
 
-# Contract size caps (docs/API_CONTRACTS.md §8): 10 MB images, 100 MB videos.
-MAX_IMAGE_BYTES = 10 * 1024 * 1024
+# Size caps: 25 MB images/docs, 100 MB videos.
+MAX_IMAGE_BYTES = 25 * 1024 * 1024
+MAX_DOC_BYTES = 25 * 1024 * 1024
 MAX_VIDEO_BYTES = 100 * 1024 * 1024
 
 
@@ -141,6 +147,11 @@ def generate_download_url(object_path: str) -> str:
     return url
 
 
+from core.cache import TTLCache
+
+_signed_url_cache = TTLCache(default_ttl_seconds=300.0)
+
+
 def sign_media_url(url: str) -> str:
     """Convert a stored media URL into a signed read URL when it points at our
     private bucket; otherwise return it unchanged.
@@ -148,4 +159,9 @@ def sign_media_url(url: str) -> str:
     object_path = object_path_from_url(url)
     if object_path is None:
         return url
-    return generate_download_url(object_path)
+    cached = _signed_url_cache.get(object_path)
+    if cached is not None:
+        return str(cached)
+    signed = generate_download_url(object_path)
+    _signed_url_cache.set(object_path, signed)
+    return signed

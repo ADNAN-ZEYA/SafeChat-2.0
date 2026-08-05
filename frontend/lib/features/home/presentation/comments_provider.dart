@@ -1,12 +1,51 @@
 import 'dart:async';
+import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../data/comment_model.dart';
 import '../data/post_repository.dart';
+import 'feed_provider.dart';
 
 final commentsProvider =
     AsyncNotifierProvider.family<CommentsNotifier, List<Comment>, String>(
       (arg) => CommentsNotifier(arg),
     );
+
+/// Real-time stream of approved comments for a post directly from Firestore.
+final approvedCommentsStreamProvider =
+    StreamProvider.family<List<Comment>, String>((ref, postId) {
+  return FirebaseFirestore.instance
+      .collection('posts')
+      .doc(postId)
+      .collection('comments')
+      .where('status', isEqualTo: 'approved')
+      .orderBy('created_at', descending: false)
+      .snapshots()
+      .map((snapshot) {
+    return snapshot.docs.map((doc) {
+      final data = doc.data();
+      DateTime? createdAt;
+      if (data['created_at'] is Timestamp) {
+        createdAt = (data['created_at'] as Timestamp).toDate();
+      } else if (data['created_at'] != null) {
+        createdAt = DateTime.tryParse(data['created_at'].toString());
+      }
+      return Comment(
+        id: doc.id,
+        postId: data['post_id'] as String? ?? postId,
+        authorUid: data['author_uid'] as String? ?? '',
+        authorDisplayName:
+            data['author_display_name'] as String? ?? 'Anonymous',
+        authorUsername: data['author_username'] as String? ?? 'unknown',
+        authorPhotoUrl: data['author_photo_url'] as String? ?? '',
+        text: data['text'] as String? ?? '',
+        parentCommentId: data['parent_comment_id'] as String?,
+        likeCount: data['like_count'] as int? ?? 0,
+        isLiked: false,
+        createdAt: createdAt,
+      );
+    }).toList();
+  });
+});
 
 class CommentsNotifier extends AsyncNotifier<List<Comment>> {
   final String arg;
@@ -30,6 +69,8 @@ class CommentsNotifier extends AsyncNotifier<List<Comment>> {
     if (state.hasValue) {
       state = AsyncValue.data([...state.value!, newComment]);
     }
+    ref.invalidate(feedPostsProvider('global'));
+    ref.invalidate(feedPostsProvider('following'));
   }
 
   /// Re-submit a flagged comment for human verification. The resulting
@@ -57,6 +98,8 @@ class CommentsNotifier extends AsyncNotifier<List<Comment>> {
           state.value!.where((c) => c.id != commentId).toList(),
         );
       }
+      ref.invalidate(feedPostsProvider('global'));
+      ref.invalidate(feedPostsProvider('following'));
     } catch (e) {
       rethrow;
     }

@@ -187,6 +187,7 @@ async def get_comments(
             db.collection(POSTS_COLLECTION)
             .document(post_id)
             .collection(COMMENTS_SUBCOLLECTION)
+            .where(filter=FieldFilter("status", "==", "approved"))
             .order_by("created_at", direction=firestore.Query.ASCENDING)
         )
         if before_dt is not None:
